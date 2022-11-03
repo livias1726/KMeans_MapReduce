@@ -83,8 +83,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	s, err := json.Marshal(&redRes)
 	errorHandler(err, 50)
 	if debug {
-		log.Printf("Recude result: %v", redRes)
-		log.Printf("Marshalled data: %s", s)
+		log.Printf("Reduce result: %v", redRes)
 	}
 
 	log.Printf("--> Reducer returning.\n")

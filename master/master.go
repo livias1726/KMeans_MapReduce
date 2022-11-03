@@ -12,7 +12,15 @@ import (
 	"time"
 )
 
+//TODO: plot result
+
 var port string
+
+type Configuration struct {
+	CurrentCentroids   utils.Points
+	DeltaThreshold     float64
+	IterationThreshold int
+}
 
 type KMRequest struct {
 	Points utils.Points
@@ -54,13 +62,19 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	mapInput.Points = kmRequest.Points
 	mapInput.Centroids, err = utils.Init(kmRequest.K, mapInput.Points)
 
+	// initialize the configuration
+	conf := new(Configuration)
+	conf.CurrentCentroids = mapInput.Centroids
+	conf.DeltaThreshold = 0.01
+	conf.IterationThreshold = 100
+
 	// call the service
 	master := new(MasterClient)
-	result, err := master.KMeans(*mapInput)
-	errorHandler(err, 64)
+	result := master.KMeans(*mapInput, *conf)
 
 	// Marshalling of result
 	s, err := json.Marshal(&result)
+	errorHandler(err, 64)
 	if debug {
 		log.Printf("Marshaled Data: %s", s)
 	}
@@ -71,35 +85,47 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 }
 
 // KMeans /*------------------------------------- REMOTE PROCEDURE - WORKER SIDE -------------------------------------*/
-func (mc *MasterClient) KMeans(mapInput MapInput) (utils.Clusters, error) {
+func (mc *MasterClient) KMeans(mapInput MapInput, configuration Configuration) utils.Clusters {
 
-	//MAP PHASE
-	log.Println("-->Activate Map Service on workers...")
-	mapOutput := mapFunction(mc, mapInput)
-	log.Print("...Done: All the workers returned from map -->\n\n")
+	var reduceOutput [][]byte
+	numIter := 0
+	for {
+		//MAP PHASE
+		log.Println("-->Activate Map Service on workers...")
+		mapOutput := mapFunction(mc, mapInput)
+		log.Print("...Done: All the workers returned from map -->\n\n")
 
-	//SHUFFLE AND SORT PHASE
-	log.Println("-->Do Shuffle and sort...")
-	reduceInput, err := shuffleAndSort(mapOutput, mc.numWorkers)
-	errorHandler(err, 87)
-	log.Print("...Done: Shuffle and sort -->\n\n")
+		//SHUFFLE AND SORT PHASE
+		log.Println("-->Do Shuffle and sort...")
+		reduceInput, err := shuffleAndSort(mapOutput, mc.numWorkers)
+		errorHandler(err, 87)
+		log.Print("...Done: Shuffle and sort -->\n\n")
 
-	//TODO: REDUCE PHASE
-	log.Println("-->Activate Reduce Service on workers...")
-	reduceFunction(mc, reduceInput) //reduceOutput := reduceFunction(mc, reduceInput)
-	log.Print("...Done: All the workers returned from reduce -->\n\n")
+		log.Println("-->Activate Reduce Service on workers...")
+		reduceOutput = reduceFunction(mc, reduceInput)
+		log.Print("...Done: All the workers returned from reduce -->\n\n")
 
-	/*
-		//TODO: PROCESS RESULTS
-		reply, err := mergeFinalResults(reduceOutput, mc.numWorkers)
-		if debug {
-			log.Printf("Map Data: %s", mapOutput)
-			log.Printf("Reduced Data: %s", reduceOutput)
-			log.Printf("Reply: %s", reply)
+		numIter++
+
+		delta, newCentroids := computeDelta(reduceOutput, configuration.CurrentCentroids)
+		if delta < configuration.DeltaThreshold {
+			break
+		} else {
+			configuration.CurrentCentroids = newCentroids
 		}
-	*/
 
-	return nil, nil //return reply, err
+		if numIter >= configuration.IterationThreshold {
+			break
+		}
+	}
+
+	//TODO: PROCESS RESULTS
+	reply := mergeFinalResults(configuration.CurrentCentroids)
+	if debug {
+		log.Printf("Reply: %v", reply)
+	}
+
+	return reply
 }
 
 /*------------------------------------------------------- MAP --------------------------------------------------------*/
@@ -280,26 +306,41 @@ func shuffleAndSort(resp [][]byte, dim int) (utils.Clusters, error) {
 }
 
 /*
-func mergeFinalResults(resp [][]byte, dim int) (utils.Clusters, error) {
+ * Compute the amount of changes that have been applied in the latest iteration and returns the new centroids
+ */
+func computeDelta(resp [][]byte, oldCentroids utils.Points) (float64, utils.Points) {
+
+	var newCentroids utils.Points
+	dim := len(oldCentroids)
+	delta := 0.0
 
 	for i := 0; i < dim; i++ {
+		var centroid utils.Point
 		// Unmarshalling
-		var outArgs ReduceArgs
-		err := json.Unmarshal(resp[i], &outArgs)
-		errorHandler(err, 320)
-		if debug {
-			log.Printf("Received: %s", resp[i])
-			log.Printf("Unmarshal: Key: %v", outArgs)
-		}
-		for k := 0; k < len(outArgs.Values); k++ {
-			file.Content += outArgs.Values[k] + "\n"
-		}
+		err := json.Unmarshal(resp[i], &centroid)
+		errorHandler(err, 315)
+
+		delta += utils.GetDistance(oldCentroids[i].Coordinates, centroid.Coordinates)
+		newCentroids = append(newCentroids, centroid)
 	}
 
-	return file, nil
+	delta = delta / float64(dim)
+
+	return delta, newCentroids
 }
 
-*/
+func mergeFinalResults(finalCentroids utils.Points) utils.Clusters {
+
+	var result utils.Clusters
+	for i := 0; i < len(finalCentroids); i++ {
+		cluster := new(utils.Cluster)
+		cluster.Centroid = finalCentroids[i]
+		//TODO: pass latest points clustering
+		result = append(result, *cluster)
+	}
+
+	return result
+}
 
 // error handling
 func errorHandler(err error, line int) {
