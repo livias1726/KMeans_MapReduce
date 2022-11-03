@@ -30,11 +30,12 @@ func ExtractPoints(dataframe dataframe.DataFrame) Points {
 // GetDistance returns the euclidean distance between two points
 func GetDistance(p1 []float64, p2 []float64) float64 {
 	var dist float64
-	for i, v := range p1 {
-		dist += math.Pow(v-p2[i], 2)
+
+	for i := 0; i < len(p1); i++ {
+		dist += math.Pow(p1[i]-p2[i], 2)
 	}
 
-	return dist
+	return math.Sqrt(dist)
 }
 
 // returns the average distance between a point and a set of points

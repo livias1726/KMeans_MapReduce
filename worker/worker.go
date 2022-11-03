@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	debug        = true
+	debug        = false
 	network      = "tcp"
 	addressLocal = "localhost:5678"
 )
@@ -18,10 +18,6 @@ const (
 type MapArgs struct {
 	Centroids utils.Points
 	Points    utils.Points
-}
-
-type MapResp struct {
-	Clusters utils.Clusters
 }
 
 type Worker int
@@ -32,38 +28,37 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 
 	// Unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
-	errorHandler(err, 41)
+	errorHandler(err, 34)
 	if debug {
-		log.Printf("Received: %v", string(payload))
-		//log.Printf("Unmarshal: Name: %s, Content: %s, Regex: %s", inArgs.File.Name, inArgs.File.Content, inArgs.Regex)
+		log.Printf("Unmarshalled. %d centroids; %d points to cluster", len(inArgs.Centroids), len(inArgs.Points))
 	}
-
-	//map
-	var mapRes MapResp
 	centroids := inArgs.Centroids
-	chunk := inArgs.Points
+	points := inArgs.Points
 
-	mapRes.Clusters = make(utils.Clusters, len(centroids))
+	log.Printf("--> Starting local Map.\n")
+	var mapRes utils.Clusters
+	// prepare clusters with initial centroids
+	mapRes = make(utils.Clusters, len(centroids))
 	for i, centroid := range centroids {
-		mapRes.Clusters[i].Centroid = centroid
+		mapRes[i].Centroid = centroid
 	}
-
+	// classify each given point to a cluster
 	var idx int
-	for _, point := range chunk {
+	for _, point := range points {
 		idx = classify(centroids, point)
-		mapRes.Clusters[idx].Points = append(mapRes.Clusters[idx].Points, point)
+		mapRes[idx].Points = append(mapRes[idx].Points, point)
 	}
-
-	log.Printf("--> Working on map.\n")
+	log.Printf("--> Finished local Map.\n")
 
 	// Marshalling
 	s, err := json.Marshal(&mapRes)
 	errorHandler(err, 50)
 	if debug {
-		log.Printf("MapRes: %v", mapRes)
-		log.Printf("Marshaled Data: %s", s)
+		log.Printf("Map result: %v", mapRes)
+		log.Printf("Marshalled data: %s", s)
 	}
 
+	log.Printf("--> Mapper returning.\n")
 	//return
 	*result = s
 	return nil
@@ -71,8 +66,30 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 
 // Reduce -> recenter /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
 func (w *Worker) Reduce(payload []byte, result *[]byte) error {
-	log.Println("--> Working on reduce")
-	*result = payload
+	var inArgs utils.Cluster
+
+	// Unmarshalling
+	err := json.Unmarshal(payload, &inArgs)
+	errorHandler(err, 72)
+	if debug {
+		log.Printf("Unmarshalled cluster with %d points to recenter", len(inArgs.Points))
+	}
+
+	log.Printf("--> Starting local Reduce.\n")
+	redRes := recenter(inArgs.Points)
+	log.Printf("--> Finished local Reduce.\n")
+
+	// Marshalling
+	s, err := json.Marshal(&redRes)
+	errorHandler(err, 50)
+	if debug {
+		log.Printf("Recude result: %v", redRes)
+		log.Printf("Marshalled data: %s", s)
+	}
+
+	log.Printf("--> Reducer returning.\n")
+	//return
+	*result = s
 	return nil
 }
 
@@ -110,6 +127,24 @@ func classify(centroids utils.Points, point utils.Point) int {
 	}
 
 	return idx
+}
+
+// recenter the given cluster
+func recenter(points utils.Points) utils.Point {
+	var centroid utils.Point
+	centroid.Coordinates = make([]float64, len(points[0].Coordinates))
+
+	for _, point := range points {
+		for j := 0; j < len(point.Coordinates); j++ {
+			centroid.Coordinates[j] += point.Coordinates[j]
+		}
+	}
+
+	for i := 0; i < len(centroid.Coordinates); i++ {
+		centroid.Coordinates[i] = centroid.Coordinates[i] / float64(len(points))
+	}
+
+	return centroid
 }
 
 // error handling

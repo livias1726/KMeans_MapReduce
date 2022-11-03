@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"math/rand"
-	"time"
 )
 
 type Cluster struct {
@@ -13,9 +12,11 @@ type Cluster struct {
 
 type Clusters []Cluster
 
-// Init : initialize the first set of clusters by randomly generating their centroids
+// Init : TODO: implement an efficient initialization phase (e.g. k-means++)
+// --> dummy initialization by randomly selecting k points from dataset
 func Init(k int, dataset Points) (Points, error) {
 	var centroids Points
+
 	// check for errors
 	if len(dataset) == 0 || len(dataset[0].Coordinates) == 0 {
 		return centroids, fmt.Errorf("dataset is empty or invalid")
@@ -24,18 +25,9 @@ func Init(k int, dataset Points) (Points, error) {
 		return centroids, fmt.Errorf("k must be more than 0 and less than the cardinality of the dataset")
 	}
 
-	// generate random coordinates for random centroids
-	length := len(dataset[0].Coordinates)
-	rand.Seed(time.Now().UnixNano())
+	// select k random points from dataset
 	for i := 0; i < k; i++ {
-		var coords []float64
-		for j := 0; j < length; j++ {
-			coords = append(coords, rand.Float64())
-		}
-
-		var point Point
-		point = Point{Coordinates: coords}
-		centroids = append(centroids, point)
+		centroids = append(centroids, dataset[rand.Intn(len(dataset))])
 	}
 
 	return centroids, nil

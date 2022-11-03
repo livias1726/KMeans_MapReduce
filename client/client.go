@@ -17,16 +17,13 @@ type Dataset struct {
 	DataFrame dataframe.DataFrame
 }
 
-// KMRequest TODO: note -> passing dataset as a plain dataframe caused marshalling errors
-//
-//	-> processing of the dataframe before sending request to master...
 type KMRequest struct {
-	Centroids utils.Points
-	Points    utils.Points
+	Points utils.Points
+	K      int
 }
 
 const (
-	debug    = true // Set to true to activate debug log
+	debug    = false // Set to true to activate debug log
 	network  = "tcp"
 	address  = "localhost"
 	service1 = "MasterServer.KMeans"
@@ -81,15 +78,16 @@ func main() {
 	}
 
 	// Unmarshalling of reply
-	var result Dataset
-	err = json.Unmarshal(reply, &result)
-	errorHandler(err, 77)
-
-	// Print grep result on screen
 	/*
-		fmt.Println("")
-		fmt.Println("-------------------------- GREP RESULT ------------------------------: ")
-		fmt.Println(result.Content)
+		var result Dataset
+		err = json.Unmarshal(reply, &result)
+		errorHandler(err, 77)
+
+		// Print grep result on screen
+
+			fmt.Println("")
+			fmt.Println("-------------------------- GREP RESULT ------------------------------: ")
+			fmt.Println(result.Content)
 
 	*/
 	err = cli.Close()
@@ -105,23 +103,17 @@ func prepareArguments() []byte {
 	dataset := new(Dataset)
 	dataset.Name = listDatasets(dirpath)
 	dataset.DataFrame = readDataset(dirpath + dataset.Name)
-	if debug {
-		log.Println(dataset.DataFrame)
-	}
 
 	// prepare request for the master
-	var err error
-
 	kmRequest := new(KMRequest)
 	kmRequest.Points = utils.ExtractPoints(dataset.DataFrame)
-	kmRequest.Centroids, err = utils.Init(10, kmRequest.Points)
-	errorHandler(err, 115)
+	kmRequest.K = scanK()
 
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
 	errorHandler(err, 119)
 	if debug {
-		log.Printf("Marshalled Data: %s ...", s[0:10])
+		log.Printf("Marshalled Data: %s ...", string(s[0:10]))
 	}
 
 	return s
@@ -163,6 +155,16 @@ func readDataset(filename string) dataframe.DataFrame {
 	dataFrame = dataFrame.Drop(dataFrame.Ncol() - 1)
 
 	return dataFrame
+}
+
+func scanK() int {
+	var k int
+
+	fmt.Println("Choose the number k of clusters:")
+	_, err := fmt.Scanf("%d\n", &k)
+	errorHandler(err, 165)
+
+	return k
 }
 
 /*----------------------------------------------------- UTILS --------------------------------------------------------*/

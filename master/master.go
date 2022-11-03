@@ -8,25 +8,20 @@ import (
 	"math/rand"
 	"net"
 	"net/rpc"
-	//"sort"
 	"strconv"
 	"time"
 )
 
 var port string
 
-type MapResponse struct {
-	Clusters utils.Clusters
+type KMRequest struct {
+	Points utils.Points
+	K      int
 }
 
-type MapRequest struct {
+type MapInput struct {
 	Centroids utils.Points
 	Points    utils.Points
-}
-
-type ReduceArgs struct {
-	Key    string
-	Values []string
 }
 
 type MasterServer int
@@ -36,7 +31,7 @@ type MasterClient struct {
 }
 
 const (
-	debug         = true
+	debug         = false
 	network       = "tcp"
 	address       = "localhost:5678"
 	mapService    = "Worker.Map"
@@ -46,133 +41,126 @@ const (
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
 func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
-	var inArgs MapRequest
-	// Unmarshalling of request
-	err := json.Unmarshal(payload, &inArgs)
-	errorHandler(err, 57)
+	var kmRequest KMRequest
+	// Unmarshalling
+	err := json.Unmarshal(payload, &kmRequest)
+	errorHandler(err, 51)
 	if debug {
-		log.Printf("Unmarshalled: %v", inArgs.Points)
+		log.Printf("Unmarshalled %d points to cluster in %d groups", len(kmRequest.Points), kmRequest.K)
 	}
+
+	// initialize the clusters
+	mapInput := new(MapInput)
+	mapInput.Points = kmRequest.Points
+	mapInput.Centroids, err = utils.Init(kmRequest.K, mapInput.Points)
 
 	// call the service
 	master := new(MasterClient)
-	err = master.KMeans(inArgs) //err = master.KMeans(outArgs)
+	result, err := master.KMeans(*mapInput)
+	errorHandler(err, 64)
 
-	/*
-		result, err := master.KMeans(clusters)
-		errorHandler(err, 64)
+	// Marshalling of result
+	s, err := json.Marshal(&result)
+	if debug {
+		log.Printf("Marshaled Data: %s", s)
+	}
 
-		// Marshalling of result
-		s, err := json.Marshal(&result)
-		if debug {
-			log.Printf("Marshaled Data: %s", s)
-		}
+	*reply = s
 
-		*reply = s
-
-	*/
 	return err
 }
 
 // KMeans /*------------------------------------- REMOTE PROCEDURE - WORKER SIDE -------------------------------------*/
-func (mc *MasterClient) KMeans(outArgs MapRequest) error {
+func (mc *MasterClient) KMeans(mapInput MapInput) (utils.Clusters, error) {
+
 	//MAP PHASE
 	log.Println("-->Activate Map Service on workers...")
-	mapFunction(mc, outArgs) //mapResp := mapFunction(mc, outArgs)
+	mapOutput := mapFunction(mc, mapInput)
 	log.Print("...Done: All the workers returned from map -->\n\n")
 
+	//SHUFFLE AND SORT PHASE
+	log.Println("-->Do Shuffle and sort...")
+	reduceInput, err := shuffleAndSort(mapOutput, mc.numWorkers)
+	errorHandler(err, 87)
+	log.Print("...Done: Shuffle and sort -->\n\n")
+
+	//TODO: REDUCE PHASE
+	log.Println("-->Activate Reduce Service on workers...")
+	reduceFunction(mc, reduceInput) //reduceOutput := reduceFunction(mc, reduceInput)
+	log.Print("...Done: All the workers returned from reduce -->\n\n")
+
 	/*
-		//SHUFFLE AND SORT PHASE
-		log.Println("-->Do Shuffle and sort...")
-		mapOutput, err := mergeMapResults(mapResp, mc.numWorkers)
-		reduceInput := shuffleAndSort(mapOutput)
-		log.Print("...Done: Shuffle and sort -->\n\n")
-
-		//REDUCE PHASE
-		log.Println("-->Activate Reduce Service on workers...")
-		redResp := reduceFunction(mc, reduceInput)
-		log.Print("...Done: All the workers returned from reduce -->\n\n")
-
-		reply, err := mergeFinalResults(redResp, mc.numWorkers)
+		//TODO: PROCESS RESULTS
+		reply, err := mergeFinalResults(reduceOutput, mc.numWorkers)
 		if debug {
-			log.Printf("Map Data: %s", mapResp)
-			log.Printf("Reduced Data: %s", redResp)
+			log.Printf("Map Data: %s", mapOutput)
+			log.Printf("Reduced Data: %s", reduceOutput)
 			log.Printf("Reply: %s", reply)
 		}
-
-		return reply, err
-
 	*/
-	return nil
+
+	return nil, nil //return reply, err
 }
 
 /*------------------------------------------------------- MAP --------------------------------------------------------*/
-func mapFunction(mc *MasterClient, args MapRequest) [][]byte {
-	// chunk the collection using getChunks function
+func mapFunction(mc *MasterClient, args MapInput) [][]byte {
+	// prepare map phase
 	chunks := getChunks(args.Points, mc)
-
-	//prepare results
 	kmChannels := make([]*rpc.Call, mc.numWorkers)
 	kmResp := make([][]byte, mc.numWorkers)
 
-	//SEND CHUNKS TO MAPPERS
+	// send a chunk to each mapper
 	for i, chunk := range chunks {
-		//create a TCP connection to localhost on port 5678
+		// create a TCP connection to localhost on port 5678
 		cli, err := rpc.DialHTTP(network, address)
-		errorHandler(err, 146)
+		errorHandler(err, 114)
 
 		mArgs := prepareMapArguments(chunk, args.Centroids)
 
-		//spawn worker connections
+		// spawn worker connections
 		kmChannels[i] = cli.Go(mapService, mArgs, &kmResp[i], nil)
-
-		log.Printf("Worker #%d spawned.", i)
+		log.Printf("Mapper #%d spawned.", i)
 	}
 
-	//wait for response
+	// wait for response
 	for i := 0; i < mc.numWorkers; i++ {
 		<-kmChannels[i].Done
-		log.Printf("Worker #%d completed.\n", i)
+		log.Printf("Mapper #%d completed.\n", i)
 	}
 
 	return kmResp
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(mc *MasterClient, redIn []ReduceArgs) [][]byte {
+func reduceFunction(mc *MasterClient, args utils.Clusters) [][]byte {
+	// prepare reduce phase
+	mc.numWorkers = len(args)
+	kmChannels := make([]*rpc.Call, mc.numWorkers)
+	kmResp := make([][]byte, mc.numWorkers)
 
-	mc.numWorkers = len(redIn)
-
-	//prepare results
-	grepChan := make([]*rpc.Call, mc.numWorkers)
-	grepResp := make([][]byte, mc.numWorkers)
-
-	//SEND CHUNKS TO REDUCERS
-	for i, chunk := range redIn {
-		//create a TCP connection to localhost on port 5678
+	// send a cluster to each reducer
+	for i, cluster := range args {
+		// create a TCP connection to localhost on port 5678
 		cli, err := rpc.DialHTTP(network, address)
-		errorHandler(err, 110)
+		errorHandler(err, 145)
 
-		// Marshaling
-		rArgs, err := json.Marshal(&chunk)
-		errorHandler(err, 114)
-		if debug {
-			log.Printf("Marshalled Data: %s", rArgs)
-		}
+		// Marshalling
+		rArgs, err := json.Marshal(&cluster)
+		errorHandler(err, 149)
 
-		//spawn worker connections
-		grepChan[i] = cli.Go(reduceService, rArgs, &grepResp[i], nil)
+		// spawn worker connections
+		kmChannels[i] = cli.Go(reduceService, rArgs, &kmResp[i], nil)
 
-		log.Printf("Spawned worker connection #%d", i)
+		log.Printf("Reducer #%d spawned.", i)
 	}
 
-	//wait for response
+	// wait for response
 	for i := 0; i < mc.numWorkers; i++ {
-		<-grepChan[i].Done
-		log.Printf("Worker #%d DONE", i)
+		<-kmChannels[i].Done
+		log.Printf("Reducer #%d completed.", i)
 	}
 
-	return grepResp
+	return kmResp
 }
 
 /*------------------------------------------------------ MAIN -------------------------------------------------------*/
@@ -242,12 +230,12 @@ func getChunks(points utils.Points, mc *MasterClient) []utils.Points {
 }
 
 /*
- * Prepares a MapRequest object with the centroids and the points for each of the Mappers.
+ * Prepares a MapInput object with the centroids and the points for each of the Mappers.
  * Returns the marshalled message for the Map.
  */
 func prepareMapArguments(chunk utils.Points, centroids utils.Points) interface{} {
 	// Arguments
-	kmArgs := new(MapRequest)
+	kmArgs := new(MapInput)
 	kmArgs.Centroids = centroids
 	kmArgs.Points = chunk
 
@@ -264,63 +252,39 @@ func prepareMapArguments(chunk utils.Points, centroids utils.Points) interface{}
 /*
  * Merges the partial clusters from every mapper in the actual clusters to reduce (recenter)
  */
-func mergeMapResults(resp [][]byte, dim int) ([]MapResponse, error) {
+func shuffleAndSort(resp [][]byte, dim int) (utils.Clusters, error) {
 
-	var mapRes []MapResponse
-
+	var mapRes utils.Clusters
 	for i := 0; i < dim; i++ {
+		var temp utils.Clusters
 		// Unmarshalling
-		var temp []MapResponse
 		err := json.Unmarshal(resp[i], &temp)
-		errorHandler(err, 301)
-
+		errorHandler(err, 273)
 		if debug {
-			log.Printf("Received: %s", resp[i])
-			log.Printf("Unmarshal: Key: %v", temp)
+			for j := 0; j < len(temp); j++ {
+				log.Printf("Worker #%d got %d points in cluster %d.\n", i, len(temp[j].Points), j)
+			}
 		}
 
-		mapRes = append(mapRes, temp...)
+		// Merging
+		if len(mapRes) == 0 {
+			mapRes = temp
+		} else {
+			for j := 0; j < len(mapRes); j++ {
+				mapRes[j].Points = append(mapRes[j].Points, temp[j].Points...)
+			}
+		}
 	}
 
 	return mapRes, nil
 }
 
 /*
-func shuffleAndSort(mapRes []MapResponse) []ReduceArgs {
-	sort.Slice(mapRes, func(i, j int) bool {
-		return mapRes[i].Key < mapRes[j].Key
-	})
-
-	var result []ReduceArgs
-	var currKey string
-
-	var r *ReduceArgs
-	for i, m := range mapRes {
-		if currKey != m.Key {
-			if i != 0 {
-				result = append(result, *r)
-			}
-			currKey = m.Key
-			r = new(ReduceArgs)
-			r.Key = currKey
-			r.Values = append(r.Values, m.Value)
-		} else {
-			r.Values = append(r.Values, m.Value)
-		}
-	}
-
-	result = append(result, *r)
-	return result
-}
-
-func mergeFinalResults(resp [][]byte, dim int) (*File, error) {
-	file := new(File)
-	file.Name = "result.txt"
+func mergeFinalResults(resp [][]byte, dim int) (utils.Clusters, error) {
 
 	for i := 0; i < dim; i++ {
 		// Unmarshalling
 		var outArgs ReduceArgs
-
 		err := json.Unmarshal(resp[i], &outArgs)
 		errorHandler(err, 320)
 		if debug {
@@ -331,6 +295,7 @@ func mergeFinalResults(resp [][]byte, dim int) (*File, error) {
 			file.Content += outArgs.Values[k] + "\n"
 		}
 	}
+
 	return file, nil
 }
 
