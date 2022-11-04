@@ -302,7 +302,7 @@ func initialize(configuration *Configuration, request KMRequest) {
 		// init-map
 		initMapOutput := mapFunction(*configuration, mapService1)
 
-		// Unmarshalling
+		// unmarshalling
 		mapOut := new(InitMapOutput)
 		for j := 0; j < len(initMapOutput); j++ {
 			var tempMapOut InitMapOutput
