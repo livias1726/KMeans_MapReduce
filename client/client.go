@@ -1,7 +1,7 @@
 package main
 
 import (
-	"KMeanMR/utils"
+	"KMeans_MapReduce/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/go-gota/gota/dataframe"
@@ -18,12 +18,13 @@ type Dataset struct {
 }
 
 type KMRequest struct {
-	Points utils.Points
-	K      int
+	DatasetPoints utils.Points
+	K             int
 }
 
 const (
 	debug    = false // Set to true to activate debug log
+	dirpath  = "client/dataset/"
 	network  = "tcp"
 	address  = "localhost"
 	service1 = "MasterServer.KMeans"
@@ -34,7 +35,6 @@ func main() {
 	var reply []byte
 	var cli *rpc.Client
 	var err error
-	welcome()
 
 	// check for open TCP ports
 	for p := 50000; p <= 50005; p++ {
@@ -78,18 +78,14 @@ func main() {
 	}
 
 	// Unmarshalling of reply
-	/*
-		var result Dataset
-		err = json.Unmarshal(reply, &result)
-		errorHandler(err, 77)
+	var result utils.Clusters
+	err = json.Unmarshal(reply, &result)
+	errorHandler(err, 77)
 
-		// Print grep result on screen
+	// TODO: plot results
+	plotResults(result)
 
-			fmt.Println("")
-			fmt.Println("-------------------------- GREP RESULT ------------------------------: ")
-			fmt.Println(result.Content)
-
-	*/
+	// close service
 	err = cli.Close()
 	errorHandler(err, 84)
 }
@@ -97,24 +93,19 @@ func main() {
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
 func prepareArguments() []byte {
 
-	dirpath := "client/dataset/"
-
 	// retrieve dataset
 	dataset := new(Dataset)
 	dataset.Name = listDatasets(dirpath)
 	dataset.DataFrame = readDataset(dirpath + dataset.Name)
 
-	// prepare request for the master
+	// prepare request
 	kmRequest := new(KMRequest)
-	kmRequest.Points = utils.ExtractPoints(dataset.DataFrame)
+	kmRequest.DatasetPoints = utils.ExtractPoints(dataset.DataFrame)
 	kmRequest.K = scanK()
 
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
-	errorHandler(err, 119)
-	if debug {
-		log.Printf("Marshalled Data: %s ...", string(s[0:10]))
-	}
+	errorHandler(err, 107)
 
 	return s
 }
@@ -124,7 +115,7 @@ func listDatasets(dirpath string) string {
 	fileMap := make(map[int]string)
 	fmt.Println("Choose a dataset:")
 
-	// Read files directory
+	// read directory
 	file, err := os.ReadDir(dirpath)
 	errorHandler(err, 119)
 
@@ -133,7 +124,7 @@ func listDatasets(dirpath string) string {
 		fileMap[i+1] = file[i].Name()
 	}
 
-	// Input the file chosen
+	// input the chosen dataset
 	fmt.Print("Select a number: ")
 	_, err = fmt.Scanf("%d\n", &fileNum)
 	errorHandler(err, 129)
@@ -147,7 +138,7 @@ func readDataset(filename string) dataframe.DataFrame {
 	}
 
 	file, err := os.Open(filename)
-	errorHandler(err, 158)
+	errorHandler(err, 140)
 
 	dataFrame := dataframe.ReadCSV(file)
 	dataFrame = dataFrame.Drop(0)
@@ -160,27 +151,24 @@ func readDataset(filename string) dataframe.DataFrame {
 func scanK() int {
 	var k int
 
-	fmt.Println("Choose the number k of clusters:")
+	fmt.Print("Choose the number k of clusters: ")
 	_, err := fmt.Scanf("%d\n", &k)
-	errorHandler(err, 165)
+	errorHandler(err, 155)
 
 	return k
 }
 
-/*----------------------------------------------------- UTILS --------------------------------------------------------*/
-func errorHandler(err error, line int) {
-	if err != nil {
-		log.Fatalf("failure at line %d: %v", line, err)
+func plotResults(result utils.Clusters) {
+	fmt.Println("")
+	fmt.Println("-------------------------- K-Means results ------------------------------: ")
+	for i := 0; i < len(result); i++ {
+		fmt.Printf("Cluster %d has %d points with an average distance of %f.\n",
+			i, len(result[i].Points), utils.GetAvgDistance(result[i].Centroid, result[i].Points))
 	}
 }
 
-func welcome() {
-	// Welcome
-	for i := 0; i <= 3; i++ {
-		fmt.Println("*")
-	}
-	fmt.Println("Author: Livia Simoncini")
-	for i := 0; i <= 3; i++ {
-		fmt.Println("*")
+func errorHandler(err error, line int) {
+	if err != nil {
+		log.Fatalf("failure at line %d: %v", line, err)
 	}
 }

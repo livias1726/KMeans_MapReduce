@@ -38,8 +38,8 @@ func GetDistance(p1 []float64, p2 []float64) float64 {
 	return math.Sqrt(dist)
 }
 
-// returns the average distance between a point and a set of points
-func getAvgDistance(p Point, points Points) float64 {
+// GetAvgDistance returns the average distance between a point and a set of points
+func GetAvgDistance(p Point, points Points) float64 {
 	var d float64
 	var l int
 

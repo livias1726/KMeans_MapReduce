@@ -1,7 +1,7 @@
 package main
 
 import (
-	"KMeanMR/utils"
+	"KMeans_MapReduce/utils"
 	"encoding/json"
 	"log"
 	"net"
@@ -9,18 +9,90 @@ import (
 	"net/rpc"
 )
 
+type Worker int
+
+// MapArgs : valid for both map services
+// --> list of current centroids to use
+// --> chunk of dataset points to process
+type MapArgs struct {
+	Centroids utils.Points
+	Points    utils.Points
+}
+
+// InitMapOut : used as output for the initialization map phase
+// --> chunk of dataset points to process
+// --> minimum distances of each point from each centroid
+type InitMapOut struct {
+	Points       utils.Points //TODO: see if you can avoid resending the points which are the same as the input
+	MinDistances []float64
+}
+
 const (
 	debug        = false
 	network      = "tcp"
 	addressLocal = "localhost:5678"
 )
 
-type MapArgs struct {
-	Centroids utils.Points
-	Points    utils.Points
+// InitMap /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
+func (w *Worker) InitMap(payload []byte, result *[]byte) error {
+	var inArgs MapArgs
+
+	// Unmarshalling
+	err := json.Unmarshal(payload, &inArgs)
+	errorHandler(err, 34)
+	if debug {
+		log.Printf("Unmarshalled. %d centroids; %d points to cluster", len(inArgs.Centroids), len(inArgs.Points))
+	}
+
+	log.Printf("--> Starting local initialization Map.\n")
+
+	initMapOutput := computeMinDistances(inArgs)
+
+	//TODO: see if you can use a Combiner node to compute the farther point among the local points
+
+	log.Printf("--> Finished local initialization Map.\n")
+
+	// Marshalling
+	s, err := json.Marshal(&initMapOutput)
+	errorHandler(err, 50)
+	if debug {
+		log.Printf("Map result: %v", initMapOutput)
+		log.Printf("Marshalled data: %s", s)
+	}
+
+	log.Printf("--> Init-Mapper returning.\n")
+	//return
+	*result = s
+	return nil
 }
 
-type Worker int
+// InitReduce /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
+func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
+	var inArgs utils.Cluster
+
+	// Unmarshalling
+	err := json.Unmarshal(payload, &inArgs)
+	errorHandler(err, 72)
+	if debug {
+		log.Printf("Unmarshalled cluster with %d points to recenter", len(inArgs.Points))
+	}
+
+	log.Printf("--> Starting local Reduce.\n")
+	redRes := recenter(inArgs.Points)
+	log.Printf("--> Finished local Reduce.\n")
+
+	// Marshalling
+	s, err := json.Marshal(&redRes)
+	errorHandler(err, 50)
+	if debug {
+		log.Printf("Reduce result: %v", redRes)
+	}
+
+	log.Printf("--> Reducer returning.\n")
+	//return
+	*result = s
+	return nil
+}
 
 // Map -> classify /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
 func (w *Worker) Map(payload []byte, result *[]byte) error {
@@ -111,6 +183,48 @@ func main() {
 }
 
 /*------------------------------------------------------ LOCAL FUNCTIONS ---------------------------------------------*/
+func computeMinDistances(inArgs MapArgs) InitMapOut {
+	centroids := inArgs.Centroids
+	points := inArgs.Points
+
+	mapOut := new(InitMapOut)
+	for _, point := range points {
+		// compute the distance between each point and each centroid
+		var dist float64
+		for i, centroid := range centroids {
+			tempDist := utils.GetDistance(point.Coordinates, centroid.Coordinates)
+			if i == 0 || dist > tempDist {
+				dist = tempDist
+			}
+		}
+
+		mapOut.Points = append(mapOut.Points, point)
+		mapOut.MinDistances = append(mapOut.MinDistances, dist)
+	}
+
+	return *mapOut
+}
+
+/* return the farther point wrt the centroids
+func initCombine(resp []InitMapOut) InitMapOut {
+	if len(resp) == 1 {
+		return resp[0]
+	}
+
+	o1 := resp[0]
+	for i := 1; i < len(resp); i++ {
+		o2 := resp[i]
+		sum := o1.MinDistances + o2.MinDistances
+		if o1.MinDistances/sum < o2.MinDistances/sum {
+			o1 = o2
+		}
+	}
+
+	return o1
+}
+
+*/
+
 // Returns the index of the centroid the point is closer to
 func classify(centroids utils.Points, point utils.Point) int {
 	var idx int

@@ -12,8 +12,7 @@ type Cluster struct {
 
 type Clusters []Cluster
 
-// Init : TODO: implement an efficient initialization phase (e.g. k-means++)
-// --> dummy initialization by randomly selecting k points from dataset
+// Init : dummy initialization by randomly selecting k points from dataset
 func Init(k int, dataset Points) (Points, error) {
 	var centroids Points
 
@@ -50,7 +49,7 @@ func (cluster Cluster) setCentroid() error {
 	}
 
 	/*
-		var mean Points
+		var mean DatasetPoints
 		for _, sum := range centroid.Coordinates {
 			mean = append(mean, sum/float64(l))
 		}
