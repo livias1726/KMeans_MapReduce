@@ -45,11 +45,8 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	}
 
 	log.Printf("--> Starting local initialization Map.\n")
-
 	initMapOutput := computeMinDistances(inArgs)
-
 	//TODO: see if you can use a Combiner node to compute the farther point among the local points
-
 	log.Printf("--> Finished local initialization Map.\n")
 
 	// Marshalling
@@ -68,18 +65,15 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 
 // InitReduce /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
 func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
-	var inArgs utils.Cluster
+	var inArgs InitMapOut
 
 	// Unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
-	if debug {
-		log.Printf("Unmarshalled cluster with %d points to recenter", len(inArgs.Points))
-	}
 
-	log.Printf("--> Starting local Reduce.\n")
-	redRes := recenter(inArgs.Points)
-	log.Printf("--> Finished local Reduce.\n")
+	log.Printf("--> Starting local initialization Reduce.\n")
+	redRes := getFartherPoint(inArgs)
+	log.Printf("--> Finished local initialization Reduce.\n")
 
 	// Marshalling
 	s, err := json.Marshal(&redRes)
@@ -88,7 +82,7 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 		log.Printf("Reduce result: %v", redRes)
 	}
 
-	log.Printf("--> Reducer returning.\n")
+	log.Printf("--> Init-Reducer returning.\n")
 	//return
 	*result = s
 	return nil
@@ -205,25 +199,21 @@ func computeMinDistances(inArgs MapArgs) InitMapOut {
 	return *mapOut
 }
 
-/* return the farther point wrt the centroids
-func initCombine(resp []InitMapOut) InitMapOut {
-	if len(resp) == 1 {
-		return resp[0]
-	}
+// return the farther point wrt the centroids
+func getFartherPoint(inArgs InitMapOut) utils.Point {
 
-	o1 := resp[0]
-	for i := 1; i < len(resp); i++ {
-		o2 := resp[i]
-		sum := o1.MinDistances + o2.MinDistances
-		if o1.MinDistances/sum < o2.MinDistances/sum {
-			o1 = o2
+	var minDist float64
+	var index int
+
+	for i, d := range inArgs.MinDistances {
+		if i == 0 || minDist > d {
+			minDist = d
+			index = i
 		}
 	}
 
-	return o1
+	return inArgs.Points[index]
 }
-
-*/
 
 // Returns the index of the centroid the point is closer to
 func classify(centroids utils.Points, point utils.Point) int {

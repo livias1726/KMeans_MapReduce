@@ -66,7 +66,7 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 
 	// initialize the configuration
 	conf := new(Configuration)
-	initialize(conf, kmRequest.DatasetPoints)
+	initialize(conf, kmRequest)
 
 	// call the service
 	master := new(MasterClient)
@@ -117,7 +117,7 @@ func (mc *MasterClient) KMeans(configuration Configuration) utils.Clusters {
 		if debug {
 			log.Println("--> Activate Reduce Service...")
 		}
-		reduceOutput = reduceFunction(configuration, reduceInput)
+		reduceOutput = reduceFunction(reduceService2, nil, reduceInput)
 		if debug {
 			log.Print("...Done. All the reducers returned. -->\n\n")
 		}
@@ -174,11 +174,43 @@ func mapFunction(conf Configuration, service string) [][]byte {
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(conf Configuration, args utils.Clusters) [][]byte {
+func reduceFunction(service string, initArgs *InitMapOutput, args utils.Clusters) [][]byte {
+
+	if service == reduceService1 {
+		return initReduce(*initArgs)
+	}
+
+	return reduce(args)
+}
+
+func initReduce(arg InitMapOutput) [][]byte {
 	// prepare reduce phase
-	conf.NumReducers = len(args)
-	kmChannels := make([]*rpc.Call, conf.NumReducers)
-	kmResp := make([][]byte, conf.NumReducers)
+	resp := make([][]byte, 1)
+
+	// create a TCP connection to localhost on port 5678
+	cli, err := rpc.DialHTTP(network, address)
+	errorHandler(err, 145)
+
+	// Marshalling
+	rArgs, err := json.Marshal(&arg)
+	errorHandler(err, 149)
+
+	// call reducer synchronously
+	err = cli.Call(reduceService1, rArgs, &resp[0])
+	errorHandler(err, 199)
+
+	if debug {
+		log.Print("Init-Reducer spawned.")
+	}
+
+	return resp
+}
+
+func reduce(args utils.Clusters) [][]byte {
+	// prepare reduce phase
+	numReducers := len(args)
+	kmChannels := make([]*rpc.Call, numReducers)
+	kmResp := make([][]byte, numReducers)
 
 	// send a cluster to each reducer
 	for i, cluster := range args {
@@ -199,7 +231,7 @@ func reduceFunction(conf Configuration, args utils.Clusters) [][]byte {
 	}
 
 	// wait for response
-	for i := 0; i < conf.NumReducers; i++ {
+	for i := 0; i < numReducers; i++ {
 		<-kmChannels[i].Done
 		if debug {
 			log.Printf("Reducer #%d completed.", i)
@@ -249,23 +281,50 @@ func serveClients() {
 }
 
 /*-------------------------------------------- LOCAL FUNCTIONS -------------------------------------------------------*/
-func initialize(configuration *Configuration, dataset utils.Points) {
+func initialize(configuration *Configuration, request KMRequest) {
 	var err error
 
 	configuration.DeltaThreshold = deltaThreshold
 	configuration.IterationThreshold = iterationThreshold
 
 	// get first random point from dataset
-	configuration.CurrentCentroids, err = utils.Init(1, dataset)
+	configuration.CurrentCentroids, err = utils.Init(1, request.DatasetPoints)
 	errorHandler(err, 257)
 
 	// distribute dataset points among the mappers
-	getChunks(dataset, configuration)
+	getChunks(request.DatasetPoints, configuration)
 
-	// init-map
-	mapFunction(*configuration, mapService1)
+	// populate the initial set of centroids
+	numIter := 0
+	for i := 0; i < request.K; i++ {
+		log.Printf("--> Starting initialization iteration #%d... ", numIter+1)
 
-	// init-reduce
+		// init-map
+		initMapOutput := mapFunction(*configuration, mapService1)
+
+		// Unmarshalling
+		mapOut := new(InitMapOutput)
+		for j := 0; j < len(initMapOutput); j++ {
+			var tempMapOut InitMapOutput
+			err := json.Unmarshal(initMapOutput[j], &tempMapOut)
+			errorHandler(err, 306)
+
+			mapOut.Points = append(mapOut.Points, tempMapOut.Points...)
+			mapOut.Distances = append(mapOut.Distances, tempMapOut.Distances...)
+		}
+
+		// init-reduce
+		initRedOutput := reduceFunction(reduceService1, mapOut, nil)
+
+		// Unmarshalling
+		var newCentroid utils.Point
+		err = json.Unmarshal(initRedOutput[0], &newCentroid)
+		errorHandler(err, 273)
+
+		configuration.CurrentCentroids = append(configuration.CurrentCentroids, newCentroid)
+
+		numIter++
+	}
 }
 
 /*
