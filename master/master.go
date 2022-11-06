@@ -28,11 +28,13 @@ type KMRequest struct {
 	K             int
 }
 
+// MapInput : matches with struct on worker side
 type MapInput struct {
 	Centroids utils.Points
 	Points    utils.Points
 }
 
+// InitMapOutput : matches with struct on worker side
 type InitMapOutput struct {
 	Points    utils.Points
 	Distances []float64
@@ -42,7 +44,7 @@ type MasterServer int
 type MasterClient int
 
 const (
-	debug              = false
+	debug              = true
 	network            = "tcp"
 	address            = "localhost:5678"
 	mapService1        = "Worker.InitMap"
@@ -57,16 +59,24 @@ const (
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
 func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	var kmRequest KMRequest
-	// Unmarshalling
+	// unmarshalling
 	err := json.Unmarshal(payload, &kmRequest)
 	errorHandler(err, 51)
 	if debug {
-		log.Printf("Unmarshalled %d points to cluster in %d groups", len(kmRequest.DatasetPoints), kmRequest.K)
+		log.Printf("Unmarshalled %d points to cluster in %d groups.", len(kmRequest.DatasetPoints), kmRequest.K)
 	}
 
 	// initialize the configuration
 	conf := new(Configuration)
 	initialize(conf, kmRequest)
+	if debug {
+		log.Printf("Initialized %d centroids with average distance of ", len(conf.CurrentCentroids))
+		d := 0.0
+		for _, c := range conf.CurrentCentroids {
+			d += utils.GetAvgDistance(c, conf.CurrentCentroids)
+		}
+		log.Printf("%f.\n", d/float64(len(conf.CurrentCentroids)))
+	}
 
 	// call the service
 	master := new(MasterClient)
@@ -134,6 +144,7 @@ func (mc *MasterClient) KMeans(configuration Configuration) utils.Clusters {
 
 		numIter++
 		if numIter >= configuration.IterationThreshold {
+			reply = reduceInput
 			break
 		}
 	}
@@ -366,9 +377,6 @@ func prepareMapArguments(chunk utils.Points, centroids utils.Points) interface{}
 	// Marshaling
 	mArgs, err := json.Marshal(&kmArgs)
 	errorHandler(err, 259)
-	if debug {
-		log.Printf("Marshaled Data: %s", mArgs)
-	}
 
 	return mArgs
 }
@@ -404,6 +412,7 @@ func shuffleAndSort(resp [][]byte, dim int) (utils.Clusters, error) {
 }
 
 /*
+ * TODO: check validity of threshold definition
  * Compute the amount of changes that have been applied in the latest iteration and returns the new centroids
  */
 func computeDelta(resp [][]byte, oldCentroids utils.Points) (float64, utils.Points) {

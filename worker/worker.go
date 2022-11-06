@@ -11,18 +11,18 @@ import (
 
 type Worker int
 
-// MapArgs : valid for both map services
+// MapInput : valid for both map services
 // --> list of current centroids to use
 // --> chunk of dataset points to process
-type MapArgs struct {
+type MapInput struct {
 	Centroids utils.Points
 	Points    utils.Points
 }
 
-// InitMapOut : used as output for the initialization map phase
+// InitMapOutput : used as output for the initialization map phase
 // --> chunk of dataset points to process
 // --> minimum distances of each point from each centroid
-type InitMapOut struct {
+type InitMapOutput struct {
 	Points       utils.Points //TODO: see if you can avoid resending the points which are the same as the input
 	MinDistances []float64
 }
@@ -35,7 +35,7 @@ const (
 
 // InitMap /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
-	var inArgs MapArgs
+	var inArgs MapInput
 
 	// Unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
@@ -65,7 +65,7 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 
 // InitReduce /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
 func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
-	var inArgs InitMapOut
+	var inArgs InitMapOutput
 
 	// Unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
@@ -90,7 +90,7 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 
 // Map -> classify /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
 func (w *Worker) Map(payload []byte, result *[]byte) error {
-	var inArgs MapArgs
+	var inArgs MapInput
 
 	// Unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
@@ -142,7 +142,12 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	}
 
 	log.Printf("--> Starting local Reduce.\n")
-	redRes := recenter(inArgs.Points)
+	var redRes utils.Point
+	if len(inArgs.Points) == 0 {
+		redRes = inArgs.Centroid
+	} else {
+		redRes = recenter(inArgs.Points)
+	}
 	log.Printf("--> Finished local Reduce.\n")
 
 	// Marshalling
@@ -177,11 +182,11 @@ func main() {
 }
 
 /*------------------------------------------------------ LOCAL FUNCTIONS ---------------------------------------------*/
-func computeMinDistances(inArgs MapArgs) InitMapOut {
+func computeMinDistances(inArgs MapInput) InitMapOutput {
 	centroids := inArgs.Centroids
 	points := inArgs.Points
 
-	mapOut := new(InitMapOut)
+	mapOut := new(InitMapOutput)
 	for _, point := range points {
 		// compute the distance between each point and each centroid
 		var dist float64
@@ -200,7 +205,7 @@ func computeMinDistances(inArgs MapArgs) InitMapOut {
 }
 
 // return the farther point wrt the centroids
-func getFartherPoint(inArgs InitMapOut) utils.Point {
+func getFartherPoint(inArgs InitMapOutput) utils.Point {
 
 	var minDist float64
 	var index int

@@ -1,4 +1,5 @@
 .idea/
+client/dataset/*
 
 go.mod
 go.sum
