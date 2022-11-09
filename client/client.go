@@ -2,110 +2,172 @@ package main
 
 import (
 	"KMeans_MapReduce/utils"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/go-gota/gota/dataframe"
+	"io"
 	"log"
+	"math"
 	"net"
 	"net/rpc"
 	"os"
 	"strconv"
+	"time"
 )
 
-type Dataset struct {
-	Name      string
-	DataFrame dataframe.DataFrame
+// KMRequest : input to master
+// --> dataset points extracted locally
+// --> number of clusters to create
+type KMRequest struct {
+	Dataset utils.Points
+	K       int
+	Last    bool
 }
 
-type KMRequest struct {
-	DatasetPoints utils.Points
-	K             int
+// KMResponse : output from master
+// --> clusters obtained
+// --> message from master wrt the termination of the algorithm
+type KMResponse struct {
+	Clusters utils.Clusters
+	Message  string
+}
+
+type Client struct {
+	Cli *rpc.Client
 }
 
 const (
-	debug    = false // Set to true to activate debug log
-	dirpath  = "client/dataset/"
+	debug    = true // Set to true to activate debug log
+	datapath = "client/dataset/"
+	//outfile  = "k-means.png"
 	network  = "tcp"
 	address  = "localhost"
-	service1 = "MasterServer.KMeans"
+	service  = "MasterServer.KMeans"
+	maxChunk = 10000 //max number of points to send to master in a single message
 )
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
+
+	client := new(Client)
+	// check for open TCP ports
+	checkConnections(client)
+
 	var reply []byte
-	var cli *rpc.Client
+	var ack bool
+
+	// prepare request
+	name := listDatasets(datapath)
+	dataset := readDataset(datapath + name)
+	dim := len(dataset)
+
+	// send 10k points per message
+	numMessages := int(math.Ceil(float64(dim) / float64(maxChunk)))
+	var mArgs []byte
+	counter := 0
+	k := new(int)
+	*k = 0
+
+	start := time.Now() // take execution time
+	for i := 0; i < numMessages; i++ {
+		// flag the last points to be sent
+		last := i == numMessages-1
+		if debug && last {
+			log.Print("--> last message")
+		}
+
+		// get marshalled request
+		if (dim - counter) > maxChunk {
+			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, last)
+		} else {
+			mArgs = prepareArguments(dataset[counter:dim], k, dim, last)
+		}
+
+		// call the service
+		if debug {
+			log.Printf("--> client %p calling service %v with a %d bytes message (%d)",
+				client.Cli, service, len(mArgs), i)
+		}
+		err := client.Cli.Call(service, mArgs, &reply)
+		errorHandler(err, 87)
+
+		if !last {
+			err = json.Unmarshal(reply, &ack)
+			errorHandler(err, 106)
+
+			if !ack {
+				i-- // retry
+			} else {
+				counter += maxChunk
+			}
+		}
+	}
+	elapsed := time.Since(start)
+	if debug {
+		log.Printf("--> service returned.")
+	}
+	err := client.Cli.Close()
+	errorHandler(err, 120)
+
+	// Unmarshalling of reply
+	var result KMResponse
+	err = json.Unmarshal(reply, &result)
+	errorHandler(err, 125)
+
+	showResults(result, elapsed)
+}
+
+func checkConnections(cli *Client) {
 	var err error
 
-	// check for open TCP ports
 	for p := 50000; p <= 50005; p++ {
 		port := strconv.Itoa(p)
-		cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
-
+		cli.Cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
 		if err != nil {
 			if debug {
-				log.Printf("Connection error: port %v is not active", p)
+				log.Printf("--> port %v is not active", p)
 			}
-			log.Printf("Connecting to master...")
+			log.Print("Connecting to master...\n")
 			continue
 		}
 
-		if cli != nil {
+		if cli.Cli != nil {
 			//create a TCP connection to localhost
 			net.JoinHostPort(address, port)
 			log.Printf("Connected on port %v", p)
-
-			if debug {
-				log.Printf("client conn: %p", cli)
-			}
 			break
 		}
 	}
-
-	// get marshalled request
-	mArgs := prepareArguments()
-
-	// call the service
-	if debug {
-		log.Printf("service: %v", service1)
-		log.Printf("args: %v", string(mArgs))
-		log.Printf("reply: %p", &reply)
-		log.Printf("client: %p", cli)
-	}
-	cliCall := cli.Go(service1, mArgs, &reply, nil)
-	repCall := <-cliCall.Done
-	if debug {
-		log.Printf("Done %v", repCall)
-	}
-
-	// Unmarshalling of reply
-	var result utils.Clusters
-	err = json.Unmarshal(reply, &result)
-	errorHandler(err, 77)
-
-	// TODO: plot results
-	plotResults(result)
-
-	// close service
-	err = cli.Close()
-	errorHandler(err, 84)
 }
 
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
-func prepareArguments() []byte {
-
-	// retrieve dataset
-	dataset := new(Dataset)
-	dataset.Name = listDatasets(dirpath)
-	dataset.DataFrame = readDataset(dirpath + dataset.Name)
-
-	// prepare request
+func prepareArguments(rawPoints [][]string, k *int, max int, last bool) []byte {
+	var err error
 	kmRequest := new(KMRequest)
-	kmRequest.DatasetPoints = utils.ExtractPoints(dataset.DataFrame)
-	kmRequest.K = scanK()
+
+	// dataset
+	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
+	errorHandler(err, 102)
+	if debug {
+		log.Printf("--> extracted %d points from dataset file.\n",
+			len(kmRequest.Dataset))
+	}
+
+	// k
+	if *k == 0 {
+		kmRequest.K = scanK(max)
+		*k = kmRequest.K
+	} else {
+		kmRequest.K = *k
+	}
+
+	// last
+	kmRequest.Last = last
 
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
-	errorHandler(err, 107)
+	errorHandler(err, 102)
 
 	return s
 }
@@ -117,8 +179,7 @@ func listDatasets(dirpath string) string {
 
 	// read directory
 	file, err := os.ReadDir(dirpath)
-	errorHandler(err, 119)
-
+	errorHandler(err, 114)
 	for i := 0; i < len(file); i++ {
 		fmt.Printf("-> (%d) %s\n", i+1, file[i].Name())
 		fileMap[i+1] = file[i].Name()
@@ -127,44 +188,107 @@ func listDatasets(dirpath string) string {
 	// input the chosen dataset
 	fmt.Print("Select a number: ")
 	_, err = fmt.Scanf("%d\n", &fileNum)
-	errorHandler(err, 129)
+	errorHandler(err, 124)
+
 	return fileMap[fileNum]
 }
 
-func readDataset(filename string) dataframe.DataFrame {
+func readDataset(filename string) [][]string {
 	//read file content
 	if debug {
-		log.Printf("Reading dataset %s", filename)
+		log.Printf("--> reading from %s ...", filename)
 	}
 
 	file, err := os.Open(filename)
 	errorHandler(err, 140)
+	defer fileClose(file)
+	all, err := csv.NewReader(file).ReadAll()
+	errorHandler(err, 163)
 
-	dataFrame := dataframe.ReadCSV(file)
-	dataFrame = dataFrame.Drop(0)
-	dataFrame = dataFrame.Drop(0)
-	dataFrame = dataFrame.Drop(dataFrame.Ncol() - 1)
+	if len(all) == 0 {
+		err = errors.New("dataset is empty")
+		errorHandler(err, 163)
+	}
 
-	return dataFrame
+	return all
 }
 
-func scanK() int {
+func scanK(max int) int {
 	var k int
 
-	fmt.Print("Choose the number k of clusters: ")
-	_, err := fmt.Scanf("%d\n", &k)
-	errorHandler(err, 155)
+	for {
+		fmt.Print("Choose the number k of clusters: ")
+		_, err := fmt.Scanf("%d\n", &k)
+		errorHandler(err, 155)
+
+		if k == 0 || k > max {
+			fmt.Println("WARNING: K must be more than 0 and less than the number of instances...")
+			continue
+		}
+
+		break
+	}
 
 	return k
 }
 
-func plotResults(result utils.Clusters) {
-	fmt.Println("")
-	fmt.Println("-------------------------- K-Means results ------------------------------: ")
-	for i := 0; i < len(result); i++ {
-		fmt.Printf("Cluster %d has %d points with an average distance of %f.\n",
-			i, len(result[i].Points), utils.GetAvgDistance(result[i].Centroid, result[i].Points))
+func showResults(result KMResponse, elapsed time.Duration) {
+	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
+	fmt.Printf("INFO: %s.\n\n", result.Message)
+	for i := 0; i < len(result.Clusters); i++ {
+		fmt.Printf("Cluster %d has %d points.\n",
+			i, len(result.Clusters[i].Points))
 	}
+	fmt.Printf("\nTime elapsed: %v.\n", elapsed)
+
+	//plotResults(result) TODO: find a way to plot multi-dimensional data
+}
+
+/*
+func plotResults(result utils.Clusters) {
+	var series []chart.Series
+
+	for i := 0; i < len(result); i++ {
+		series = append(series, getSeries(result[i]))
+	}
+
+	graph := getChart(series)
+
+	buffer := bytes.NewBuffer([]byte{})
+	err := graph.Render(chart.PNG, buffer)
+	errorHandler(err, 205)
+
+	err = os.WriteFile(outfile, buffer.Bytes(), 0644)
+	errorHandler(err, 208)
+}
+
+func getChart(series []chart.Series) chart.Chart {
+	c := new(chart.Chart)
+
+	c.Series = series
+	c.XAxis.Style.Show = true
+	c.YAxis.Style.Show = true
+
+	return *c
+}
+
+func getSeries(cluster utils.Cluster) chart.ContinuousSeries {
+	c := new(chart.ContinuousSeries)
+	c.Style.Show = true
+	c.Style.StrokeWidth = chart.Disabled
+	c.Style.DotWidth = 5
+	c.XValues = cluster.getX()
+	c.YValues = cluster.getY()
+
+	return *c
+}
+*/
+
+func fileClose(file io.Closer) {
+	func(file io.Closer) {
+		err := file.Close()
+		errorHandler(err, 131)
+	}(file)
 }
 
 func errorHandler(err error, line int) {

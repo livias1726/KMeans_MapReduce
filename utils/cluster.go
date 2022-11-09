@@ -16,14 +16,6 @@ type Clusters []Cluster
 func Init(k int, dataset Points) (Points, error) {
 	var centroids Points
 
-	// check for errors
-	if len(dataset) == 0 || len(dataset[0].Coordinates) == 0 {
-		return centroids, fmt.Errorf("dataset is empty or invalid")
-	}
-	if k == 0 || k >= len(dataset) {
-		return centroids, fmt.Errorf("k must be more than 0 and less than the cardinality of the dataset")
-	}
-
 	// select k random points from dataset
 	for i := 0; i < k; i++ {
 		centroids = append(centroids, dataset[rand.Intn(len(dataset))])
