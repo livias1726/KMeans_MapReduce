@@ -13,24 +13,35 @@ import (
 	"time"
 )
 
-type MasterServer int
+type MasterServer struct {
+	Id     int
+	Config Configuration
+}
+
 type MasterClient int
 
 // Configuration :
 type Configuration struct {
-	DatasetDim         int
-	CurrentCentroids   utils.Points   // list of current centroids to re-send to mappers
-	InputPoints        []utils.Points // chunks of dataset points divided by mapper
-	NumMappers         int            // number of mappers currently active
-	NumReducers        int            // number of reducers currently active
-	DeltaThreshold     float64        // stop condition on updates
-	IterationThreshold int            // stop condition on number of iteration
+	Dataset    utils.Points
+	K          int
+	DatasetDim int
+	//----------------------
+	CurrentCentroids utils.Points     // list of current centroids to re-send to mappers
+	InputPoints      [][]utils.Points // chunks of dataset points divided by mapper
+	Mappers          []*rpc.Client    // list of mappers to communicate with
+	//----------------------
+	NumMappers  int // number of mappers currently active
+	NumReducers int // number of reducers currently active
+	//----------------------
+	DeltaThreshold     float64 // stop condition on updates
+	IterationThreshold int     // stop condition on number of iteration
 }
 
 // KMRequest : matches with struct on client side
 type KMRequest struct {
 	Dataset utils.Points
 	K       int
+	Last    bool
 }
 
 // KMResponse : matches with struct on client side
@@ -60,6 +71,7 @@ const (
 	mapService2        = "Worker.Map"
 	reduceService2     = "Worker.Reduce"
 	maxLoad            = 1000 //every worker operates on a maximum of 'maxLoad' points
+	maxNodes           = 10
 	deltaThreshold     = 0.01
 	iterationThreshold = 10
 )
@@ -77,13 +89,27 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 			len(kmRequest.Dataset), kmRequest.K)
 	}
 
+	m.Config.Dataset = append(m.Config.Dataset, kmRequest.Dataset...)
+	m.Config.DatasetDim += len(kmRequest.Dataset)
+
+	if !kmRequest.Last {
+		s, err := json.Marshal(true)
+		errorHandler(err, 64)
+		if debug {
+			log.Print("--> master responding with ack.\n")
+		}
+		*reply = s
+		return err
+	}
+
+	m.Config.K = kmRequest.K
+
 	// initialize configuration
-	conf := new(Configuration)
-	initialize(conf, kmRequest)
+	initialize(&m.Config)
 
 	// call the service
 	master := new(MasterClient)
-	result, msg := master.KMeans(conf)
+	result, msg := master.KMeans(&m.Config)
 
 	// preparing response
 	var resp KMResponse
@@ -312,63 +338,94 @@ func serveClients(port string) {
 }
 
 /*-------------------------------------------- LOCAL FUNCTIONS -------------------------------------------------------*/
-func initialize(conf *Configuration, request KMRequest) {
-	getChunks(conf, request.Dataset)
+func initialize(conf *Configuration) {
+	getChunks(conf)
 	if debug {
-		log.Printf("--> initialized %d chunks with an average of %d points each.\n",
-			len(conf.InputPoints), utils.GetAvgCapacityOfSet(conf.InputPoints))
+		log.Printf("--> %d mappers to spawn with %d chunks.\n",
+			len(conf.InputPoints), len(conf.InputPoints[0]))
 	}
 
-	kMeanspp(conf, request.Dataset, request.K)
+	createConnections(conf)
+	if debug {
+		log.Printf("--> initialized %d connections to mapper nodes.\n",
+			len(conf.Mappers))
+	}
+
+	kMeanspp(conf)
 	if debug {
 		log.Printf("--> initialized %d centroids with average distance of %f.\n",
 			len(conf.CurrentCentroids), utils.GetAvgDistanceOfSet(conf.CurrentCentroids))
 	}
 
-	conf.DatasetDim = len(request.Dataset)
 	conf.DeltaThreshold = deltaThreshold
 	conf.IterationThreshold = iterationThreshold
 }
 
 /*
- * Get chunks of max 1000 points from a given request
+ * Get chunks of max 1000 points from a request and assign them to each mapper (max 10 mappers)
  */
-func getChunks(conf *Configuration, points utils.Points) {
-	// distribute dataset points among the mappers
-	var pointsPerWorker int
-	numPoints := len(points)
+func getChunks(conf *Configuration) {
 
-	conf.NumMappers = int(math.Ceil(float64(numPoints) / float64(maxLoad)))
+	numPoints := conf.DatasetDim
 
-	//create and populate chunk buffer
-	chunks := make([]utils.Points, conf.NumMappers)
-	idx := 0
-	for i := 0; i < conf.NumMappers; i++ {
-		//add 'pointsPerWorker' points from src to chunk
-		if i == conf.NumMappers-1 && numPoints%maxLoad != 0 {
-			pointsPerWorker = numPoints % maxLoad
-		} else {
-			pointsPerWorker = maxLoad
-		}
-
-		chunks[i] = points[idx : idx+pointsPerWorker]
-		idx = idx + pointsPerWorker + 1
+	// get correct number of mappers to spawn
+	numMappers := int(math.Ceil(float64(numPoints) / float64(maxLoad))) // mappers that would be necessary
+	if numMappers < maxNodes {
+		conf.NumMappers = numMappers
+	} else {
+		conf.NumMappers = maxNodes
 	}
 
-	conf.InputPoints = chunks
-	//TODO: first round of map connections -> establish a connection and transmit the chunks only 1 time
+	// initialize rows of input points matrix
+	conf.InputPoints = make([][]utils.Points, conf.NumMappers)
+
+	// get correct number of chunks to send to each mapper (Round-Robin)
+	chunksPerWorker := int(math.Ceil(float64(numPoints) / float64(conf.NumMappers*maxLoad)))
+
+	// initialize cols of input points matrix
+	for i := 0; i < conf.NumMappers; i++ {
+		conf.InputPoints[i] = make([]utils.Points, chunksPerWorker)
+	}
+
+	// populate chunks
+	var pointsPerWorker int
+	idx := 0
+	for i := 0; i < chunksPerWorker; i++ {
+		for j := 0; j < conf.NumMappers; j++ {
+			if i == chunksPerWorker-1 && j == conf.NumMappers-1 && numPoints%maxLoad != 0 {
+				pointsPerWorker = numPoints % maxLoad
+			} else {
+				pointsPerWorker = maxLoad
+			}
+			log.Printf("populating chunk %d of mapper %d with ", i, j)
+			conf.InputPoints[j][i] = conf.Dataset[idx : idx+pointsPerWorker]
+			idx += pointsPerWorker
+			log.Printf("%d points\n", len(conf.InputPoints[j][i]))
+		}
+	}
 }
 
-func kMeanspp(conf *Configuration, points utils.Points, k int) {
+// TODO: first round of map connections -> establish a connection and transmit the chunks only 1 time
+func createConnections(conf *Configuration) {
+	var err error
+	conf.Mappers = make([]*rpc.Client, conf.NumMappers)
+	// create a TCP connection to localhost on port 5678
+	for i := 0; i < conf.NumMappers; i++ {
+		conf.Mappers[i], err = rpc.DialHTTP(network, address)
+		errorHandler(err, 114)
+	}
+}
+
+func kMeanspp(conf *Configuration) {
 	var err error
 
 	// get first random point from dataset
-	conf.CurrentCentroids, err = utils.Init(1, points)
+	conf.CurrentCentroids, err = utils.Init(1, conf.Dataset)
 	errorHandler(err, 257)
 
 	// populate the initial set of centroids
 	numIter := 0
-	for i := 0; i < k; i++ {
+	for i := 0; i < conf.K; i++ {
 		log.Printf("K-Means++ (initialization) iteration #%d... ", numIter+1)
 
 		// init-map
@@ -410,11 +467,13 @@ func initShuffleAndSort(initMapOutput [][]byte) *InitMapOutput {
  * Prepares a MapInput object with the centroids and the points for each of the Mappers.
  * Returns the marshalled message for the Map.
  */
-func prepareMapArguments(chunk utils.Points, centroids utils.Points) []byte {
+func prepareMapArguments(chunks []utils.Points, centroids utils.Points) []byte {
 	// Arguments
 	kmArgs := new(MapInput)
 	kmArgs.Centroids = centroids
-	kmArgs.Points = chunk
+	for _, chunk := range chunks {
+		kmArgs.Points = append(kmArgs.Points, chunk...)
+	}
 
 	// Marshaling
 	mArgs, err := json.Marshal(&kmArgs)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/rpc"
 	"os"
@@ -21,6 +22,7 @@ import (
 type KMRequest struct {
 	Dataset utils.Points
 	K       int
+	Last    bool
 }
 
 // KMResponse : output from master
@@ -35,15 +37,17 @@ const (
 	debug    = true // Set to true to activate debug log
 	datapath = "client/dataset/"
 	//outfile  = "k-means.png"
-	network = "tcp"
-	address = "localhost"
-	service = "MasterServer.KMeans"
+	network  = "tcp"
+	address  = "localhost"
+	service  = "MasterServer.KMeans"
+	maxChunk = 10000
 )
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 
 	var reply []byte
+	var ack bool
 	var cli *rpc.Client
 	var err error
 
@@ -52,17 +56,68 @@ func main() {
 	defer fileClose(cli)
 
 	// prepare request
-	mArgs := prepareArguments()
+	name := listDatasets(datapath)
+	dataset := readDataset(datapath + name)
+	dim := len(dataset)
 
-	// call the service
-	if debug {
-		log.Printf("--> client %p calling service %v with a %d bytes message...",
-			cli, service, len(mArgs))
+	// send 10k points per message
+	numMessages := int(math.Ceil(float64(dim) / float64(maxChunk)))
+	var mArgs []byte
+	counter := 0
+	k := new(int)
+	*k = 0
+
+	start := time.Now() // take execution time
+	for i := 0; i < numMessages; i++ {
+		// flag the last points to be sent
+		last := i == numMessages-1
+		if debug && last {
+			log.Print("--> last message")
+		}
+
+		// get marshalled request
+		if (dim - counter) > maxChunk {
+			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, last)
+		} else {
+			mArgs = prepareArguments(dataset[counter:dim], k, dim, last)
+		}
+
+		// call the service
+		if debug {
+			log.Printf("--> client %p calling service %v with a %d bytes message (%d)",
+				cli, service, len(mArgs), i)
+		}
+		err := cli.Call(service, mArgs, &reply)
+		errorHandler(err, 87)
+
+		if !last {
+			err = json.Unmarshal(reply, &ack)
+			errorHandler(err, 106)
+
+			if !ack {
+				i-- // retry
+			} else {
+				counter += maxChunk
+			}
+		}
 	}
-	start := time.Now()                    // take execution time
-	err = cli.Call(service, mArgs, &reply) // sync call
-	errorHandler(err, 87)
 	elapsed := time.Since(start)
+
+	/*
+		// prepare request
+		mArgs := prepareArguments()
+
+		// call the service
+		if debug {
+			log.Printf("--> client %p calling service %v with a %d bytes message...",
+				cli, service, len(mArgs))
+		}
+		start := time.Now()                    // take execution time
+		err = cli.Call(service, mArgs, &reply) // sync call
+		errorHandler(err, 87)
+		elapsed := time.Since(start)
+
+	*/
 	if debug {
 		log.Printf("--> service returned.")
 	}
@@ -99,15 +154,12 @@ func checkConnections(cli **rpc.Client) {
 }
 
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
-func prepareArguments() []byte {
+func prepareArguments(rawPoints [][]string, k *int, max int, last bool) []byte {
 	var err error
-
-	name := listDatasets(datapath)
-	dataset := readDataset(datapath + name)
+	kmRequest := new(KMRequest)
 
 	// dataset
-	kmRequest := new(KMRequest)
-	kmRequest.Dataset, err = utils.ExtractPoints(dataset)
+	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
 	errorHandler(err, 102)
 	if debug {
 		log.Printf("--> extracted %d points from dataset file.\n",
@@ -115,7 +167,15 @@ func prepareArguments() []byte {
 	}
 
 	// k
-	kmRequest.K = scanK(len(dataset))
+	if *k == 0 {
+		kmRequest.K = scanK(max)
+		*k = kmRequest.K
+	} else {
+		kmRequest.K = *k
+	}
+
+	// last
+	kmRequest.Last = last
 
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
