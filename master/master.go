@@ -13,53 +13,24 @@ import (
 	"time"
 )
 
-// GlobalConfig : configuration parameters that are valid for every thread
-type GlobalConfig struct {
-	Dataset            utils.Points
-	K                  int
-	DeltaThreshold     float64 // stop condition on updates
-	IterationThreshold int     // stop condition on number of iteration
-	Active             bool
-}
+type MasterServer int
+type MasterClient int
 
-// LocalConfig : each thread processes its own centroids with its own chunks
-type LocalConfig struct {
-	CurrentCentroids utils.Points   // list of current centroids to re-send to mappers
-	InputPoints      []utils.Points // chunks of dataset points divided by mapper
-	NumMappers       int            // number of mappers currently active
-	NumReducers      int            // number of reducers currently active
-}
-
-type MasterServer struct {
-	Id         int
-	Count      int
-	GlobalConf GlobalConfig
-	MapConn    MapConnections
-}
-
-type MasterClient struct {
-	NumMappers  int // number of mappers currently active
-	NumReducers int // number of reducers currently active
-}
-
-type MapConnection struct {
-	Cli  *rpc.Client
-	Chan *rpc.Call
-	Resp [][]byte
-	Free bool
-}
-
-type MapConnections struct {
-	Conn    []MapConnection
-	NumFree int
-	Active  bool
+// Configuration :
+type Configuration struct {
+	DatasetDim         int
+	CurrentCentroids   utils.Points   // list of current centroids to re-send to mappers
+	InputPoints        []utils.Points // chunks of dataset points divided by mapper
+	NumMappers         int            // number of mappers currently active
+	NumReducers        int            // number of reducers currently active
+	DeltaThreshold     float64        // stop condition on updates
+	IterationThreshold int            // stop condition on number of iteration
 }
 
 // KMRequest : matches with struct on client side
 type KMRequest struct {
 	Dataset utils.Points
 	K       int
-	Last    bool
 }
 
 // KMResponse : matches with struct on client side
@@ -72,7 +43,6 @@ type KMResponse struct {
 type MapInput struct {
 	Centroids utils.Points
 	Points    utils.Points
-	Last      bool
 }
 
 // InitMapOutput : matches with struct on worker side
@@ -102,28 +72,18 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	// unmarshalling
 	err := json.Unmarshal(payload, &kmRequest)
 	errorHandler(err, 51)
-	m.Count++
 	if debug {
 		log.Printf("--> unmarshalled %d points to cluster in %d groups.",
 			len(kmRequest.Dataset), kmRequest.K)
 	}
 
-	// spawn an async thread to process the portion of points received
-	go initialize(m.Count, kmRequest, m.MapConn)
-
-	if !kmRequest.Last {
-		s, err := json.Marshal(true)
-		errorHandler(err, 64)
-		if debug {
-			log.Print("--> master responding with ack.\n")
-		}
-		*reply = s
-		return err
-	}
+	// initialize configuration
+	conf := new(Configuration)
+	initialize(conf, kmRequest)
 
 	// call the service
 	master := new(MasterClient)
-	result, msg := master.KMeans(&m.Conf)
+	result, msg := master.KMeans(conf)
 
 	// preparing response
 	var resp KMResponse
@@ -171,7 +131,7 @@ func (mc *MasterClient) KMeans(configuration *Configuration) (utils.Clusters, st
 		}
 
 		// check update threshold
-		delta := computeDelta(reduceInput, len(configuration.Dataset))
+		delta := computeDelta(reduceInput, configuration.DatasetDim)
 		if delta < configuration.DeltaThreshold {
 			reply = reduceInput
 			msg = fmt.Sprintf("Algorithm converged to a %f%% percentage of membership change after %d iterations",
@@ -207,43 +167,34 @@ func (mc *MasterClient) KMeans(configuration *Configuration) (utils.Clusters, st
 }
 
 /*------------------------------------------------------- MAP --------------------------------------------------------*/
-func mapFunction(conf LocalConfig, service string, conn MapConnections) [][]byte {
+func mapFunction(conf Configuration, service string) [][]byte {
 	if debug {
 		log.Println("--> map started.")
 	}
 
-	var err error
-	// prepare map phase
-	if !conn.Active {
-		conn.Conn = make([]MapConnection, conf.NumMappers)
-
-		for i := 0; i < conf.NumMappers; i++ {
-			// create a TCP connection to localhost on port 5678
-			conn.Conn[i].Cli, err = rpc.DialHTTP(network, address)
-			errorHandler(err, 114)
-		}
-
-		conn.Active = true
-		conn.NumFree = conf.NumMappers
-	}
-
+	channels := make([]*rpc.Call, conf.NumMappers)
+	results := make([][]byte, conf.NumMappers)
 	// send a chunk to each mapper
 	for i, chunk := range conf.InputPoints {
+		// create a TCP connection to localhost on port 5678
+		cli, err := rpc.DialHTTP(network, address)
+		errorHandler(err, 114)
+
 		mapArgs := prepareMapArguments(chunk, conf.CurrentCentroids)
 		// spawn worker connections
-		conn.Conn[i].Chan = conn.Conn[i].Cli.Go(service, mapArgs, &conn.Conn[i].Resp, nil)
+		channels[i] = cli.Go(service, mapArgs, &results[i], nil)
 	}
 
 	// wait for response
 	for i := 0; i < conf.NumMappers; i++ {
-		<-conn.Conn[i].Chan.Done
+		<-channels[i].Done
 	}
 
 	if debug {
 		log.Println("--> map completed.")
 	}
 
-	return response
+	return results
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
@@ -257,6 +208,10 @@ func reduceFunction(service string, initArgs *InitMapOutput, args utils.Clusters
 }
 
 func initReduce(arg InitMapOutput) [][]byte {
+	if debug {
+		log.Print("--> reduce started.")
+	}
+
 	// prepare reduce phase
 	resp := make([][]byte, 1)
 
@@ -273,7 +228,7 @@ func initReduce(arg InitMapOutput) [][]byte {
 	errorHandler(err, 199)
 
 	if debug {
-		log.Print("Init-Reducer spawned.")
+		log.Print("--> reduce completed.")
 	}
 
 	return resp
@@ -331,7 +286,7 @@ func main() {
 	err := rpc.Register(master)
 	errorHandler(err, 180)
 	if debug {
-		log.Print("--> master server is online.\n")
+		log.Print("--> master node is online.\n")
 	}
 
 	select {} //infinite loop
@@ -357,25 +312,28 @@ func serveClients(port string) {
 }
 
 /*-------------------------------------------- LOCAL FUNCTIONS -------------------------------------------------------*/
-func initialize(id int, request KMRequest, connections MapConnections) {
-	lConf := new(LocalConfig)
-	getChunks(lConf, request.Dataset)
+func initialize(conf *Configuration, request KMRequest) {
+	getChunks(conf, request.Dataset)
 	if debug {
-		log.Printf("--> (%d) initialized %d chunks with an average of %d points each.\n",
-			id, len(lConf.InputPoints), utils.GetAvgCapacityOfSet(lConf.InputPoints))
+		log.Printf("--> initialized %d chunks with an average of %d points each.\n",
+			len(conf.InputPoints), utils.GetAvgCapacityOfSet(conf.InputPoints))
 	}
 
-	kMeanspp(lConf, request.Dataset, request.K, connections)
+	kMeanspp(conf, request.Dataset, request.K)
 	if debug {
-		log.Printf("--> (%d) initialized %d centroids with average distance of %f.\n",
-			id, len(lConf.CurrentCentroids), utils.GetAvgDistanceOfSet(lConf.CurrentCentroids))
+		log.Printf("--> initialized %d centroids with average distance of %f.\n",
+			len(conf.CurrentCentroids), utils.GetAvgDistanceOfSet(conf.CurrentCentroids))
 	}
+
+	conf.DatasetDim = len(request.Dataset)
+	conf.DeltaThreshold = deltaThreshold
+	conf.IterationThreshold = iterationThreshold
 }
 
 /*
  * Get chunks of max 1000 points from a given request
  */
-func getChunks(conf *LocalConfig, points utils.Points) {
+func getChunks(conf *Configuration, points utils.Points) {
 	// distribute dataset points among the mappers
 	var pointsPerWorker int
 	numPoints := len(points)
@@ -398,9 +356,10 @@ func getChunks(conf *LocalConfig, points utils.Points) {
 	}
 
 	conf.InputPoints = chunks
+	//TODO: first round of map connections -> establish a connection and transmit the chunks only 1 time
 }
 
-func kMeanspp(conf *LocalConfig, points utils.Points, k int, conn MapConnections) {
+func kMeanspp(conf *Configuration, points utils.Points, k int) {
 	var err error
 
 	// get first random point from dataset
@@ -413,31 +372,38 @@ func kMeanspp(conf *LocalConfig, points utils.Points, k int, conn MapConnections
 		log.Printf("K-Means++ (initialization) iteration #%d... ", numIter+1)
 
 		// init-map
-		initMapOutput := mapFunction(*conf, mapService1, conn)
+		initMapOutput := mapFunction(*conf, mapService1)
 
-		// unmarshalling
-		mapOut := new(InitMapOutput)
-		for j := 0; j < len(initMapOutput); j++ {
-			var tempMapOut InitMapOutput
-			err := json.Unmarshal(initMapOutput[j], &tempMapOut)
-			errorHandler(err, 306)
+		// aggregation of results
+		mapOut := initShuffleAndSort(initMapOutput)
 
-			mapOut.Points = append(mapOut.Points, tempMapOut.Points...)
-			mapOut.Distances = append(mapOut.Distances, tempMapOut.Distances...)
-		}
-
-		// init-reduce
+		// init-reduce -> single reducer
 		initRedOutput := reduceFunction(reduceService1, mapOut, nil)
 
-		// Unmarshalling
+		// add new centroid
 		var newCentroid utils.Point
 		err = json.Unmarshal(initRedOutput[0], &newCentroid)
-		errorHandler(err, 273)
+		errorHandler(err, 385)
 
 		conf.CurrentCentroids = append(conf.CurrentCentroids, newCentroid)
 
 		numIter++
 	}
+}
+
+func initShuffleAndSort(initMapOutput [][]byte) *InitMapOutput {
+	mapOut := new(InitMapOutput)
+
+	for j := 0; j < len(initMapOutput); j++ {
+		var tempMapOut InitMapOutput
+		err := json.Unmarshal(initMapOutput[j], &tempMapOut)
+		errorHandler(err, 306)
+
+		mapOut.Points = append(mapOut.Points, tempMapOut.Points...)
+		mapOut.Distances = append(mapOut.Distances, tempMapOut.Distances...)
+	}
+
+	return mapOut
 }
 
 /*
