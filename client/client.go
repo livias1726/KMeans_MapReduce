@@ -71,9 +71,6 @@ func main() {
 	for i := 0; i < numMessages; i++ {
 		// flag the last points to be sent
 		last := i == numMessages-1
-		if debug && last {
-			log.Print("--> last message")
-		}
 
 		// get marshalled request
 		if (dim - counter) > maxChunk {
@@ -103,21 +100,6 @@ func main() {
 	}
 	elapsed := time.Since(start)
 
-	/*
-		// prepare request
-		mArgs := prepareArguments()
-
-		// call the service
-		if debug {
-			log.Printf("--> client %p calling service %v with a %d bytes message...",
-				cli, service, len(mArgs))
-		}
-		start := time.Now()                    // take execution time
-		err = cli.Call(service, mArgs, &reply) // sync call
-		errorHandler(err, 87)
-		elapsed := time.Since(start)
-
-	*/
 	if debug {
 		log.Printf("--> service returned.")
 	}
@@ -161,10 +143,6 @@ func prepareArguments(rawPoints [][]string, k *int, max int, last bool) []byte {
 	// dataset
 	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
 	errorHandler(err, 102)
-	if debug {
-		log.Printf("--> extracted %d points from dataset file.\n",
-			len(kmRequest.Dataset))
-	}
 
 	// k
 	if *k == 0 {

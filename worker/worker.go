@@ -9,22 +9,37 @@ import (
 	"net/rpc"
 )
 
-type Worker int
+type Mapper struct {
+	Centroids utils.Points
+	Points    []utils.Points
+	Dim       int
+}
+
+type Worker struct {
+	Mappers [maxNodes]Mapper
+}
+
+type Combiner struct {
+	MapOut     utils.Clusters
+	InitMapOut InitMapOutput
+}
 
 // MapInput : valid for both map services
 // --> list of current centroids to use
 // --> chunk of dataset points to process
 type MapInput struct {
+	Id        int
 	Centroids utils.Points
-	//TODO: see if you can avoid resending these at every iteration --> do an initial iteration of points transmission!
-	Points utils.Points
+	Points    utils.Points
+	NewPoints bool
+	First     bool
+	Last      bool
 }
 
 // InitMapOutput : used as output for the initialization map phase
 // --> chunk of dataset points to process
 // --> minimum distances of each point from each centroid
 type InitMapOutput struct {
-	//TODO: see if you can avoid resending the points which are the same as the input
 	Points       utils.Points
 	MinDistances []float64
 }
@@ -33,64 +48,87 @@ const (
 	debug        = true
 	network      = "tcp"
 	addressLocal = "localhost:5678"
+	maxNodes     = 10
 )
 
 // InitMap
 // --> input: set of current chosen initial centroids (from 1 to k-1) and chunk of points to process --> (mu, x)
 // --> output: chunk of points processed and their minimum distance from the set of centroids
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
-	var inArgs MapInput
-
 	// unmarshalling
+	var inArgs MapInput
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 34)
-	if debug {
-		log.Printf("--> unmarshalled %d centroids and %d points to cluster",
-			len(inArgs.Centroids), len(inArgs.Points))
+
+	// select mapper
+	idx := inArgs.Id
+	mapper := &w.Mappers[idx]
+
+	// store data
+	if inArgs.First {
+		mapper.Centroids = inArgs.Centroids
 	}
 
-	initMapOutput := computeMinDistances(inArgs)
+	if inArgs.NewPoints {
+		mapper.Points = append(mapper.Points, inArgs.Points)
+		mapper.Dim += len(inArgs.Points)
+	}
 
-	//TODO: use a combiner to get the only the point with maximum distance from each centroid
+	// send ack
+	if !inArgs.Last {
+		s, err := json.Marshal(true)
+		errorHandler(err, 64)
+		*result = s
+		return err
+	}
+
+	if debug {
+		log.Printf("--> MAPPER %d: received %d centroid(s) and %d chunk(s) [%d points]",
+			idx, len(mapper.Centroids), len(mapper.Points), mapper.Dim)
+	}
+
+	// combine
+	comb := new(Combiner)
+	for i := 0; i < len(mapper.Points); i++ {
+		initMapOutput := computeMinDistances(mapper.Points[i], mapper.Centroids)
+		comb.initCombine(initMapOutput)
+	}
 
 	// marshalling
-	s, err := json.Marshal(&initMapOutput)
+	s, err := json.Marshal(comb.InitMapOut)
 	errorHandler(err, 50)
 
-	if debug {
-		log.Printf("--> init-mapper returning.\n")
-	}
-
-	//return
+	// return
 	*result = s
 	return nil
 }
 
-// InitReduce --> TODO: bottleneck
+// InitReduce
 // --> input : complete set of points and their minimum distance from the current set of centroids
 // --> output: new centroid
 func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 	var inArgs InitMapOutput
+	var redRes utils.Point
 
-	// Unmarshalling
+	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
 	if debug {
-		log.Printf("--> unmarshalled %d points to choose the centroid from",
+		log.Printf("--> REDUCER: received %d points to choose the centroid from",
 			len(inArgs.Points))
 	}
 
-	redRes := getFartherPoint(inArgs)
+	if len(inArgs.Points) == 1 {
+		redRes = inArgs.Points[0]
+	} else {
+		redRes, _ = getFartherPoint(inArgs)
+	}
 
-	// Marshalling
+	// marshalling
 	s, err := json.Marshal(&redRes)
 	errorHandler(err, 50)
 
-	if debug {
-		log.Printf("--> init-reducer returning.\n")
-	}
-
-	//return
+	// return
 	*result = s
 	return nil
 }
@@ -126,7 +164,7 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	errorHandler(err, 50)
 
 	log.Printf("--> mapper returning.\n")
-	//return
+	// return
 	*result = s
 	return nil
 }
@@ -161,12 +199,20 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	return nil
 }
 
+// Performs a combine phase for a local map output before giving the result to the master
+func (c *Combiner) initCombine(inArgs InitMapOutput) {
+	combRes, dist := getFartherPoint(inArgs)
+
+	c.InitMapOut.Points = append(c.InitMapOut.Points, combRes)
+	c.InitMapOut.MinDistances = append(c.InitMapOut.MinDistances, dist)
+}
+
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
 	// Publish the receiver methods
 	err := rpc.Register(worker)
-	errorHandler(err, 63)
+	errorHandler(err, 214)
 
 	// Register a HTTP handler
 	rpc.HandleHTTP()
@@ -184,13 +230,13 @@ func main() {
 }
 
 /*------------------------------------------------------ LOCAL FUNCTIONS ---------------------------------------------*/
-func computeMinDistances(inArgs MapInput) InitMapOutput {
+func computeMinDistances(points utils.Points, centroids utils.Points) InitMapOutput {
 	var mapOut InitMapOutput
 
-	for _, point := range inArgs.Points {
+	for _, point := range points {
 		// compute the distance between each point and each centroid
 		var dist float64
-		for i, centroid := range inArgs.Centroids {
+		for i, centroid := range centroids {
 			tempDist := utils.GetDistance(point.Coordinates, centroid.Coordinates)
 			if i == 0 || dist > tempDist {
 				dist = tempDist
@@ -205,19 +251,19 @@ func computeMinDistances(inArgs MapInput) InitMapOutput {
 }
 
 // return the farther point wrt the centroids
-func getFartherPoint(inArgs InitMapOutput) utils.Point {
+func getFartherPoint(inArgs InitMapOutput) (utils.Point, float64) {
 
-	var minDist float64
+	var maxDist float64
 	var index int
 
 	for i, d := range inArgs.MinDistances {
-		if i == 0 || minDist > d {
-			minDist = d
+		if i == 0 || maxDist < d {
+			maxDist = d
 			index = i
 		}
 	}
 
-	return inArgs.Points[index]
+	return inArgs.Points[index], maxDist
 }
 
 // Returns the index of the centroid the point is closer to
