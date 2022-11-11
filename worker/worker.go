@@ -11,7 +11,7 @@ import (
 
 type Mapper struct {
 	Centroids utils.Points
-	Points    []utils.Points
+	Chunks    []utils.Points
 	Dim       int
 }
 
@@ -70,7 +70,7 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	}
 
 	if inArgs.NewPoints {
-		mapper.Points = append(mapper.Points, inArgs.Points)
+		mapper.Chunks = append(mapper.Chunks, inArgs.Points)
 		mapper.Dim += len(inArgs.Points)
 	}
 
@@ -84,13 +84,14 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 
 	if debug {
 		log.Printf("--> MAPPER %d: received %d centroid(s) and %d chunk(s) [%d points]",
-			idx, len(mapper.Centroids), len(mapper.Points), mapper.Dim)
+			idx, len(mapper.Centroids), len(mapper.Chunks), mapper.Dim)
 	}
 
-	// combine
 	comb := new(Combiner)
-	for i := 0; i < len(mapper.Points); i++ {
-		initMapOutput := computeMinDistances(mapper.Points[i], mapper.Centroids)
+	for i := 0; i < len(mapper.Chunks); i++ {
+		// map
+		initMapOutput := computeMinDistances(mapper.Chunks[i], mapper.Centroids)
+		// combine
 		comb.initCombine(initMapOutput)
 	}
 
@@ -140,30 +141,38 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 34)
-	centroids := inArgs.Centroids
-	points := inArgs.Points
+
+	// select mapper
+	id := inArgs.Id
+	mapper := &w.Mappers[id]
+	mapper.Centroids = inArgs.Centroids
 
 	var mapRes utils.Clusters
 	// prepare clusters with initial centroids
-	mapRes = make(utils.Clusters, len(centroids))
-	for i, centroid := range centroids {
+	mapRes = make(utils.Clusters, len(mapper.Centroids))
+	for i, centroid := range mapper.Centroids {
 		mapRes[i].Centroid = centroid
 	}
 	// classify each given point to a cluster
 	var idx int
-	for _, point := range points {
-		idx = classify(centroids, point)
-
-		point.From = point.To
-		point.To = idx
-		mapRes[idx].Points = append(mapRes[idx].Points, point)
+	//comb := new(Combiner)
+	for _, points := range mapper.Chunks {
+		// map
+		for _, point := range points {
+			idx = classify(mapper.Centroids, point)
+			point.From = point.To
+			point.To = idx
+			mapRes[idx].Points = append(mapRes[idx].Points, point)
+		}
+		// combine
+		//comb.combine(mapRes)
 	}
 
 	// Marshalling
 	s, err := json.Marshal(&mapRes)
 	errorHandler(err, 50)
 
-	log.Printf("--> mapper returning.\n")
+	log.Printf("--> mapper [%d] returning.\n", id)
 	// return
 	*result = s
 	return nil
