@@ -32,6 +32,7 @@ type Configuration struct {
 	CurrentCentroids utils.Points     // list of current centroids to re-send to mappers
 	InputPoints      [][]utils.Points // chunks of dataset points divided by mapper
 	Mappers          []*rpc.Client    // list of mappers to communicate with
+	Reducers         []*rpc.Client    // list of reducers to communicate with
 	//----------------------
 	NumMappers  int // number of mappers currently active
 	NumReducers int // number of reducers currently active
@@ -80,7 +81,7 @@ const (
 	maxLoad            = 1000 //every worker operates on a maximum of 'maxLoad' points
 	maxNodes           = 10
 	deltaThreshold     = 0.01
-	iterationThreshold = 10
+	iterationThreshold = 15
 )
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
@@ -154,7 +155,8 @@ func (mc *MasterClient) KMeans(dataset utils.Points, k int, dim int) (utils.Clus
 	}
 
 	// create enough connections to communicate with the mappers
-	conf.Mappers = createConnections(conf.NumMappers)
+	conf.NumReducers = conf.K
+	conf.Mappers, conf.Reducers = createConnections(conf.NumMappers, conf.NumReducers)
 	if debug {
 		log.Printf("--> initialized %d connections to mapper nodes.\n",
 			len(conf.Mappers))
@@ -187,69 +189,27 @@ func mapFunction(conf Configuration, service string, iteration int) [][]byte {
 
 func initMap(conf Configuration, iteration int) [][]byte {
 	if debug {
-		log.Printf("--> init map [%d] started... ", iteration)
+		log.Println("--> init-map phase started... ")
 	}
 
 	channels := make([]*rpc.Call, conf.NumMappers)
 	results := make([][]byte, conf.NumMappers)
 	chunksPerMapper := len(conf.InputPoints[0])
 
-	counter := 0
-
-	var first bool
-	var last bool
+	// send chunks and centroids
 	newPoints := iteration == 0
-
-	var ack bool
 	for i := 0; i < chunksPerMapper; i++ {
-		first = i == 0
-		last = i == chunksPerMapper-1
+		first := i == 0
+		last := i == chunksPerMapper-1
 
 		for j := 0; j < len(conf.Mappers); j++ {
 			cli := conf.Mappers[j]
 			mapArgs := prepareInitMapArgs(j, conf.InputPoints[j][i], conf.CurrentCentroids, first, newPoints, last)
-			counter += len(conf.InputPoints[j][i])
 			channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil)
 		}
-
 		// wait for ack
 		if !last { //TODO: does not ack last chunk
-			var idx []int
-			stop := true
-			for j := 0; j < conf.NumMappers; j++ {
-				<-channels[j].Done
-				err := json.Unmarshal(results[j], &ack)
-				errorHandler(err, 106)
-
-				if !ack {
-					idx = append(idx, j)
-					stop = false
-				}
-			}
-
-			for !stop {
-				// check replies
-				stop = true
-				idx = nil
-				for _, id := range idx {
-					<-channels[id].Done
-					err := json.Unmarshal(results[id], &ack)
-					errorHandler(err, 106)
-
-					if !ack {
-						idx = append(idx, id)
-						stop = false
-					}
-				}
-				// retry if nack
-				for _, id := range idx {
-					cli := conf.Mappers[id]
-					mapArgs := prepareInitMapArgs(id, conf.InputPoints[id][i], conf.CurrentCentroids,
-						first, newPoints, last)
-					counter += len(conf.InputPoints[id][i])
-					channels[id] = cli.Go(mapService1, mapArgs, &results[id], nil)
-				}
-			}
+			checkAck(conf, channels, results, i, first, newPoints, last)
 		}
 	}
 
@@ -258,16 +218,56 @@ func initMap(conf Configuration, iteration int) [][]byte {
 		<-channels[i].Done
 	}
 
+	// return
 	if debug {
 		log.Println("			...completed.")
 	}
-
 	return results
+}
+
+func checkAck(conf Configuration, channels []*rpc.Call, results [][]byte, chunkId int,
+	first bool, newPoints bool, last bool) {
+	var ack bool
+	var idx []int
+	stop := true
+	for j := 0; j < conf.NumMappers; j++ {
+		<-channels[j].Done
+		err := json.Unmarshal(results[j], &ack)
+		errorHandler(err, 106)
+
+		if !ack {
+			idx = append(idx, j)
+			stop = false
+		}
+	}
+
+	for !stop {
+		// check replies
+		stop = true
+		idx = nil
+		for _, id := range idx {
+			<-channels[id].Done
+			err := json.Unmarshal(results[id], &ack)
+			errorHandler(err, 106)
+
+			if !ack {
+				idx = append(idx, id)
+				stop = false
+			}
+		}
+		// retry if nack
+		for _, id := range idx {
+			cli := conf.Mappers[id]
+			mapArgs := prepareInitMapArgs(id, conf.InputPoints[id][chunkId], conf.CurrentCentroids,
+				first, newPoints, last)
+			channels[id] = cli.Go(mapService1, mapArgs, &results[id], nil)
+		}
+	}
 }
 
 func mapFunc(conf Configuration) [][]byte {
 	if debug {
-		log.Print("--> map started... ")
+		log.Print("--> map phase started... ")
 	}
 
 	channels := make([]*rpc.Call, conf.NumMappers)
@@ -289,33 +289,27 @@ func mapFunc(conf Configuration) [][]byte {
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(service string, initArgs *InitMapOutput, args utils.Clusters) [][]byte {
+func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args utils.Clusters) [][]byte {
 
 	if service == reduceService1 {
-		return initReduce(*initArgs)
+		return initReduce(conf, *initArgs)
 	}
 
-	return reduce(args)
+	return reduce(conf, args)
 }
 
-func initReduce(arg InitMapOutput) [][]byte {
+func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
 	if debug {
-		log.Print("--> init reduce started...")
+		log.Print("--> init-reduce phase started...")
 	}
 
-	// prepare reduce phase
-	resp := make([][]byte, 1)
-
-	// create a TCP connection to localhost on port 5678
-	cli, err := rpc.DialHTTP(network, address)
-	errorHandler(err, 145)
-
-	// Marshalling
+	// marshalling
 	rArgs, err := json.Marshal(&arg)
 	errorHandler(err, 149)
 
 	// call reducer synchronously
-	err = cli.Call(reduceService1, rArgs, &resp[0])
+	resp := make([][]byte, 1) // to be used with 'reduceFunction'
+	err = conf.Reducers[0].Call(reduceService1, rArgs, &resp[0])
 	errorHandler(err, 199)
 
 	if debug {
@@ -325,39 +319,34 @@ func initReduce(arg InitMapOutput) [][]byte {
 	return resp
 }
 
-func reduce(args utils.Clusters) [][]byte {
+func reduce(conf Configuration, clusters utils.Clusters) [][]byte {
 	if debug {
-		log.Print("--> reduce started...")
+		log.Print("--> reduce phase started...")
 	}
 
 	// prepare reduce phase
-	numReducers := len(args)
-	kmChannels := make([]*rpc.Call, numReducers)
-	kmResp := make([][]byte, numReducers)
+	channels := make([]*rpc.Call, conf.NumReducers)
+	results := make([][]byte, conf.NumReducers)
 
 	// send a cluster to each reducer
-	for i, cluster := range args {
-		// create a TCP connection
-		cli, err := rpc.DialHTTP(network, address)
-		errorHandler(err, 145)
-
+	for i, cli := range conf.Reducers {
 		// marshalling
-		rArgs, err := json.Marshal(&cluster)
+		rArgs, err := json.Marshal(&clusters[i])
 		errorHandler(err, 149)
-
-		// spawn worker connections
-		kmChannels[i] = cli.Go(reduceService2, rArgs, &kmResp[i], nil)
+		// call service
+		channels[i] = cli.Go(reduceService2, rArgs, &results[i], nil)
 	}
 
 	// wait for response
-	for i := 0; i < numReducers; i++ {
-		<-kmChannels[i].Done
+	for i := 0; i < conf.NumReducers; i++ {
+		<-channels[i].Done
 	}
 
+	// return
 	if debug {
 		log.Print("			...completed.")
 	}
-	return kmResp
+	return results
 }
 
 /*------------------------------------------------------ MAIN -------------------------------------------------------*/
@@ -446,15 +435,24 @@ func getChunks(dataset utils.Points) ([][]utils.Points, int) {
 	return inputPoints, numMappers
 }
 
-func createConnections(numMappers int) []*rpc.Client {
+func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.Client) {
 	var err error
+	// mappers
 	mappers := make([]*rpc.Client, numMappers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numMappers; i++ {
 		mappers[i], err = rpc.DialHTTP(network, address)
 		errorHandler(err, 114)
 	}
-	return mappers
+	// reducers
+	reducers := make([]*rpc.Client, numReducers)
+	// create a TCP connection to localhost on port 5678
+	for i := 0; i < numReducers; i++ {
+		reducers[i], err = rpc.DialHTTP(network, address)
+		errorHandler(err, 114)
+	}
+
+	return mappers, reducers
 }
 
 func kMeanspp(conf *Configuration) {
@@ -476,7 +474,7 @@ func kMeanspp(conf *Configuration) {
 		mapOut := initShuffleAndSort(initMapOutput)
 
 		// init-reduce -> single reducer
-		initRedOutput := reduceFunction(reduceService1, mapOut, nil)
+		initRedOutput := reduceFunction(*conf, reduceService1, mapOut, nil)
 
 		// add new centroid
 		var newCentroid utils.Point
@@ -504,7 +502,7 @@ func initShuffleAndSort(initMapOutput [][]byte) *InitMapOutput {
 	return mapOut
 }
 
-func kMeans(configuration *Configuration) (utils.Clusters, string) {
+func kMeans(conf *Configuration) (utils.Clusters, string) {
 	var reduceOutput [][]byte
 	var reply utils.Clusters
 	var msg string
@@ -514,14 +512,14 @@ func kMeans(configuration *Configuration) (utils.Clusters, string) {
 		log.Printf("Standard K-Means iteration #%d... ", numIter+1)
 
 		// map
-		mapOutput := mapFunction(*configuration, mapService2, -1)
+		mapOutput := mapFunction(*conf, mapService2, -1)
 
 		// shuffle and sort
-		reduceInput := shuffleAndSort(mapOutput, configuration.NumMappers)
+		reduceInput := shuffleAndSort(mapOutput, conf.NumMappers)
 
 		// check update threshold
-		delta := computeDelta(reduceInput, configuration.DatasetDim)
-		if delta < configuration.DeltaThreshold {
+		delta := computeDelta(reduceInput, conf.DatasetDim)
+		if delta < conf.DeltaThreshold {
 			reply = reduceInput
 			msg = fmt.Sprintf("Algorithm converged to a %f%% percentage of membership change after %d iterations",
 				delta, numIter)
@@ -529,11 +527,11 @@ func kMeans(configuration *Configuration) (utils.Clusters, string) {
 		}
 
 		// reduce
-		reduceOutput = reduceFunction(reduceService2, nil, reduceInput)
-		configuration.CurrentCentroids = computeNewCentroids(reduceOutput)
+		reduceOutput = reduceFunction(*conf, reduceService2, nil, reduceInput)
+		conf.CurrentCentroids = computeNewCentroids(reduceOutput)
 
 		numIter++
-		if numIter >= configuration.IterationThreshold {
+		if numIter >= conf.IterationThreshold {
 			reply = reduceInput
 			msg = fmt.Sprintf("Algorithm terminated after reaching the maximum number of iterations (%d). ",
 				numIter)

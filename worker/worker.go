@@ -146,6 +146,9 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	id := inArgs.Id
 	mapper := &w.Mappers[id]
 	mapper.Centroids = inArgs.Centroids
+	if debug {
+		log.Printf("--> MAPPER [%d] received %d new centroids.", id, len(mapper.Centroids))
+	}
 
 	var mapRes utils.Clusters
 	// prepare clusters with initial centroids
@@ -172,7 +175,6 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	s, err := json.Marshal(&mapRes)
 	errorHandler(err, 50)
 
-	log.Printf("--> mapper [%d] returning.\n", id)
 	// return
 	*result = s
 	return nil
@@ -182,27 +184,24 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	var inArgs utils.Cluster
 
-	// Unmarshalling
+	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
 	if debug {
-		log.Printf("Unmarshalled cluster with %d points to recenter", len(inArgs.Points))
+		log.Printf("--> REDUCER: received %d points to recenter", len(inArgs.Points))
 	}
 
-	log.Printf("--> Starting local Reduce.\n")
 	var redRes utils.Point
 	if len(inArgs.Points) == 0 {
 		redRes = inArgs.Centroid
 	} else {
 		redRes = recenter(inArgs.Points)
 	}
-	log.Printf("--> Finished local Reduce.\n")
 
-	// Marshalling
+	// marshalling
 	s, err := json.Marshal(&redRes)
 	errorHandler(err, 50)
 
-	log.Printf("--> Reducer returning.\n")
 	//return
 	*result = s
 	return nil
