@@ -52,7 +52,7 @@ func main() {
 	var err error
 
 	// check for open TCP ports
-	checkConnections(&cli)
+	connect(&cli)
 	defer fileClose(cli)
 
 	// prepare request
@@ -84,7 +84,7 @@ func main() {
 			log.Printf("--> client %p calling service %v with a %d bytes message (%d)",
 				cli, service, len(mArgs), i)
 		}
-		err := cli.Call(service, mArgs, &reply)
+		err = cli.Call(service, mArgs, &reply)
 		errorHandler(err, 87)
 
 		if !last {
@@ -99,9 +99,8 @@ func main() {
 		}
 	}
 	elapsed := time.Since(start)
-
 	if debug {
-		log.Printf("--> service returned.")
+		log.Print("--> service returned.")
 	}
 
 	// unmarshalling of reply
@@ -112,7 +111,7 @@ func main() {
 	showResults(result, elapsed)
 }
 
-func checkConnections(cli **rpc.Client) {
+func connect(cli **rpc.Client) {
 	var err error
 
 	for p := 50000; p <= 50005; p++ {
@@ -222,6 +221,7 @@ func scanK(max int) int {
 	return k
 }
 
+/*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
 func showResults(result KMResponse, elapsed time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)
@@ -274,6 +274,7 @@ func getSeries(cluster utils.Cluster) chart.ContinuousSeries {
 }
 */
 
+/*---------------------------------------------------- UTILS ---------------------------------------------------------*/
 func fileClose(file io.Closer) {
 	func(file io.Closer) {
 		err := file.Close()

@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+//TODO: balance the load on the reducers (and ss phase if possible)
+
 type MasterServer struct {
 	//Clients    []MasterClient //TODO: be able to serve multiple clients simultaneously
 	Dataset    utils.Points
@@ -25,20 +27,15 @@ type MasterClient struct {
 
 // Configuration :
 type Configuration struct {
-	Dataset    utils.Points
-	K          int
-	DatasetDim int
-	//----------------------
-	CurrentCentroids utils.Points     // list of current centroids to re-send to mappers
-	InputPoints      [][]utils.Points // chunks of dataset points divided by mapper
-	Mappers          []*rpc.Client    // list of mappers to communicate with
-	Reducers         []*rpc.Client    // list of reducers to communicate with
-	//----------------------
-	NumMappers  int // number of mappers currently active
-	NumReducers int // number of reducers currently active
-	//----------------------
-	DeltaThreshold     float64 // stop condition on updates
-	IterationThreshold int     // stop condition on number of iteration
+	K                  int
+	CurrentCentroids   utils.Points     // list of current centroids to re-send to mappers
+	InputPoints        [][]utils.Points // chunks of dataset points divided by mapper
+	Mappers            []*rpc.Client    // list of mappers to communicate with
+	Reducers           []*rpc.Client    // list of reducers to communicate with
+	NumMappers         int              // number of mappers currently active
+	NumReducers        int              // number of reducers currently active
+	DeltaThreshold     float64          // stop condition on updates
+	IterationThreshold int              // stop condition on number of iteration
 }
 
 // KMRequest : matches with struct on client side
@@ -54,20 +51,41 @@ type KMResponse struct {
 	Message  string
 }
 
-// MapInput : matches with struct on worker side
-type MapInput struct {
-	Id        int
-	Centroids utils.Points
-	Points    utils.Points
-	NewPoints bool
+type InitMapInput struct {
+	MapperId  int
 	First     bool
+	Centroids utils.Points
+	NewPoints bool
+	Chunk     utils.Points
 	Last      bool
 }
 
-// InitMapOutput : matches with struct on worker side
 type InitMapOutput struct {
 	Points    utils.Points
 	Distances []float64
+}
+
+type MapInput struct {
+	MapperId  int
+	Centroids utils.Points
+}
+
+type MapOutput struct {
+	ClusterId []int
+	Points    []utils.Points
+	Len       []int
+}
+
+type ReduceInput struct {
+	ClusterId int
+	Points    utils.Points
+	Len       int
+}
+
+type ReduceOutput struct {
+	ClusterId int
+	Point     utils.Point
+	Len       int
 }
 
 const (
@@ -97,10 +115,6 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	// store new points
 	m.Dataset = append(m.Dataset, kmRequest.Dataset...)
 	m.DatasetDim += len(kmRequest.Dataset)
-	if debug {
-		log.Printf("--> received %d points to cluster in %d groups.",
-			m.DatasetDim, kmRequest.K)
-	}
 
 	// send ack
 	if !kmRequest.Last {
@@ -111,11 +125,16 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 		return err
 	}
 
+	if debug {
+		log.Printf("--> received %d points to cluster in %d groups.",
+			m.DatasetDim, kmRequest.K)
+	}
+
 	// call the service
 	master := new(MasterClient)
 	//m.Clients = append(m.Clients, *master)
 
-	result, msg := master.KMeans(m.Dataset, kmRequest.K, m.DatasetDim)
+	result, msg := master.KMeans(m.Dataset, kmRequest.K)
 
 	// preparing response
 	var resp KMResponse
@@ -139,16 +158,14 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 }
 
 // KMeans /*------------------------------------- REMOTE PROCEDURE - WORKER SIDE -------------------------------------*/
-func (mc *MasterClient) KMeans(dataset utils.Points, k int, dim int) (utils.Clusters, string) {
+func (mc *MasterClient) KMeans(dataset utils.Points, k int) (utils.Clusters, string) {
 	conf := new(Configuration)
 
 	// initialize configuration
-	conf.Dataset = dataset
 	conf.K = k
-	conf.DatasetDim = dim
 
 	// divide the dataset among the mappers
-	conf.InputPoints, conf.NumMappers = getChunks(conf.Dataset)
+	conf.InputPoints, conf.NumMappers = getChunks(dataset)
 	if debug {
 		log.Printf("--> %d mappers to spawn with %d chunks.\n",
 			len(conf.InputPoints), len(conf.InputPoints[0]))
@@ -163,7 +180,7 @@ func (mc *MasterClient) KMeans(dataset utils.Points, k int, dim int) (utils.Clus
 	}
 
 	// perform k-means++
-	kMeanspp(conf)
+	kMeanspp(conf, dataset)
 	if debug {
 		log.Printf("--> initialized %d centroids with average distance of %f.\n",
 			len(conf.CurrentCentroids), utils.GetAvgDistanceOfSet(conf.CurrentCentroids))
@@ -220,7 +237,7 @@ func initMap(conf Configuration, iteration int) [][]byte {
 
 	// return
 	if debug {
-		log.Println("			...completed.")
+		log.Println("\t\t\t...completed.")
 	}
 	return results
 }
@@ -282,20 +299,20 @@ func mapFunc(conf Configuration) [][]byte {
 	}
 
 	if debug {
-		log.Println("			...completed.")
+		log.Println("\t\t\t...completed.")
 	}
 
 	return results
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args utils.Clusters) [][]byte {
+func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args *MapOutput) [][]byte {
 
 	if service == reduceService1 {
 		return initReduce(conf, *initArgs)
 	}
 
-	return reduce(conf, args)
+	return reduce(conf, *args)
 }
 
 func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
@@ -313,13 +330,13 @@ func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
 	errorHandler(err, 199)
 
 	if debug {
-		log.Print("			...completed.")
+		log.Print("\t\t\t...completed.")
 	}
 
 	return resp
 }
 
-func reduce(conf Configuration, clusters utils.Clusters) [][]byte {
+func reduce(conf Configuration, args MapOutput) [][]byte {
 	if debug {
 		log.Print("--> reduce phase started...")
 	}
@@ -331,8 +348,7 @@ func reduce(conf Configuration, clusters utils.Clusters) [][]byte {
 	// send a cluster to each reducer
 	for i, cli := range conf.Reducers {
 		// marshalling
-		rArgs, err := json.Marshal(&clusters[i])
-		errorHandler(err, 149)
+		rArgs := prepareReduceArgs(args.ClusterId[i], args.Points[i], args.Len[i])
 		// call service
 		channels[i] = cli.Go(reduceService2, rArgs, &results[i], nil)
 	}
@@ -344,7 +360,7 @@ func reduce(conf Configuration, clusters utils.Clusters) [][]byte {
 
 	// return
 	if debug {
-		log.Print("			...completed.")
+		log.Print("\t\t\t...completed.")
 	}
 	return results
 }
@@ -437,29 +453,31 @@ func getChunks(dataset utils.Points) ([][]utils.Points, int) {
 
 func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.Client) {
 	var err error
+
 	// mappers
 	mappers := make([]*rpc.Client, numMappers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numMappers; i++ {
 		mappers[i], err = rpc.DialHTTP(network, address)
-		errorHandler(err, 114)
+		errorHandler(err, 454)
 	}
+
 	// reducers
 	reducers := make([]*rpc.Client, numReducers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numReducers; i++ {
 		reducers[i], err = rpc.DialHTTP(network, address)
-		errorHandler(err, 114)
+		errorHandler(err, 462)
 	}
 
 	return mappers, reducers
 }
 
-func kMeanspp(conf *Configuration) {
+func kMeanspp(conf *Configuration, dataset utils.Points) {
 	var err error
 
 	// get first random point from dataset
-	conf.CurrentCentroids, err = utils.Init(1, conf.Dataset)
+	conf.CurrentCentroids, err = utils.Init(1, dataset)
 	errorHandler(err, 257)
 
 	// populate the initial set of centroids
@@ -476,188 +494,213 @@ func kMeanspp(conf *Configuration) {
 		// init-reduce -> single reducer
 		initRedOutput := reduceFunction(*conf, reduceService1, mapOut, nil)
 
-		// add new centroid
+		// add the new centroid
 		var newCentroid utils.Point
 		err = json.Unmarshal(initRedOutput[0], &newCentroid)
 		errorHandler(err, 385)
-
 		conf.CurrentCentroids = append(conf.CurrentCentroids, newCentroid)
 
+		// iterate
 		numIter++
 	}
 }
 
-func initShuffleAndSort(initMapOutput [][]byte) *InitMapOutput {
-	mapOut := new(InitMapOutput)
+// merges the nearest points (combined) wrt the centroids obtained from each mapper
+func initShuffleAndSort(outs [][]byte) *InitMapOutput {
+	initMapOut := new(InitMapOutput)
 
-	for j := 0; j < len(initMapOutput); j++ {
-		var tempMapOut InitMapOutput
-		err := json.Unmarshal(initMapOutput[j], &tempMapOut)
+	var tempMapOut InitMapOutput
+	for _, out := range outs {
+		err := json.Unmarshal(out, &tempMapOut)
 		errorHandler(err, 306)
-
-		mapOut.Points = append(mapOut.Points, tempMapOut.Points...)
-		mapOut.Distances = append(mapOut.Distances, tempMapOut.Distances...)
+		// merge
+		initMapOut.Points = append(initMapOut.Points, tempMapOut.Points...)
+		initMapOut.Distances = append(initMapOut.Distances, tempMapOut.Distances...)
 	}
 
-	return mapOut
+	return initMapOut
 }
 
 func kMeans(conf *Configuration) (utils.Clusters, string) {
-	var reduceOutput [][]byte
-	var reply utils.Clusters
+	var reduceInput MapOutput
 	var msg string
 
-	numIter := 0
+	numIter := 1
 	for {
-		log.Printf("Standard K-Means iteration #%d... ", numIter+1)
+		log.Printf("Standard K-Means iteration #%d... ", numIter)
 
 		// map
-		mapOutput := mapFunction(*conf, mapService2, -1)
-
+		mapOutput := mapFunction(*conf, mapService2, 0)
 		// shuffle and sort
-		reduceInput := shuffleAndSort(mapOutput, conf.NumMappers)
-
+		reduceInput = shuffleAndSort(mapOutput)
+		// reduce
+		reduceOutput := reduceFunction(*conf, reduceService2, nil, &reduceInput)
 		// check update threshold
-		delta := computeDelta(reduceInput, conf.DatasetDim)
+		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids)
+		delta := computeDelta(conf.CurrentCentroids, newCentroids)
 		if delta < conf.DeltaThreshold {
-			reply = reduceInput
-			msg = fmt.Sprintf("Algorithm converged to a %f%% percentage of membership change after %d iterations",
+			msg = fmt.Sprintf("Algorithm converged to a %f%% change in centroids position after %d iterations",
 				delta, numIter)
 			break
 		}
-
-		// reduce
-		reduceOutput = reduceFunction(*conf, reduceService2, nil, reduceInput)
-		conf.CurrentCentroids = computeNewCentroids(reduceOutput)
-
-		numIter++
+		conf.CurrentCentroids = newCentroids
+		// check num of iterations
 		if numIter >= conf.IterationThreshold {
-			reply = reduceInput
 			msg = fmt.Sprintf("Algorithm terminated after reaching the maximum number of iterations (%d). ",
 				numIter)
 			msg = msg + fmt.Sprintf("Last delta obtained in points classification changes is %f",
 				delta)
 			break
 		}
+		// iterate
+		numIter++
 	}
 
-	return reply, msg
+	clusters := make(utils.Clusters, conf.K)
+	for i := 0; i < conf.K; i++ {
+		clusters[i].Centroid = conf.CurrentCentroids[i]
+		clusters[i].Points = reduceInput.Points[i]
+	}
+
+	return clusters, msg
 }
 
-/*
- * Merges the partial clusters from every mapper in the actual clusters to reduce (recenter)
- */
-func shuffleAndSort(resp [][]byte, dim int) utils.Clusters {
+// merges the partial (combined) clusters from every mapper in the actual clusters to pass to the reducers
+func shuffleAndSort(resp [][]byte) MapOutput {
 	if debug {
 		log.Println("--> shuffle and sort...")
 	}
 
-	var mapRes utils.Clusters
-
-	for i := 0; i < dim; i++ {
-		var temp utils.Clusters
-
+	pMap := make(map[int]utils.Points)
+	lMap := make(map[int]int)
+	for _, m := range resp {
 		// unmarshalling
-		err := json.Unmarshal(resp[i], &temp)
-		errorHandler(err, 273)
+		var temp MapOutput
+		err := json.Unmarshal(m, &temp)
+		errorHandler(err, 584)
 
-		// merging
-		if len(mapRes) == 0 {
-			mapRes = temp
-		} else {
-			for j := 0; j < len(mapRes); j++ {
-				mapRes[j].Points = append(mapRes[j].Points, temp[j].Points...)
+		// merge
+		for j, cid := range temp.ClusterId {
+			_, ok := pMap[cid]
+			if ok {
+				pMap[cid] = append(pMap[cid], temp.Points[j]...)
+				lMap[cid] += temp.Len[j]
+			} else {
+				pMap[cid] = temp.Points[j]
+				lMap[cid] = temp.Len[j]
 			}
 		}
 	}
 
-	if debug {
-		log.Print("			...completed.")
+	mapRes := new(MapOutput)
+	for k, v := range pMap {
+		mapRes.ClusterId = append(mapRes.ClusterId, k)
+		mapRes.Points = append(mapRes.Points, v)
+		mapRes.Len = append(mapRes.Len, lMap[k])
 	}
-	return mapRes
+
+	if debug {
+		log.Print("\t\t\t...completed.")
+	}
+	return *mapRes
 }
 
 /*
- * Prepares a MapInput object for the k-means++ iteration with (eventually) the current centroids and the points
+ * Prepares a InitMapInput object for the k-means++ iteration with (eventually) the current centroids and the points
  * for each Mapper.
  */
 func prepareInitMapArgs(mapperId int, chunk utils.Points, centroids utils.Points, first bool, newPoints bool,
 	last bool) []byte {
 	// Arguments
-	kmArgs := new(MapInput)
-	kmArgs.Id = mapperId
+	initMapArgs := new(InitMapInput)
+	initMapArgs.MapperId = mapperId
 
 	if !newPoints { // if not first iteration of map -> points already transmitted
-		kmArgs.Points = nil
+		initMapArgs.Chunk = nil
 	} else {
-		kmArgs.Points = chunk
+		initMapArgs.Chunk = chunk
 	}
 
-	kmArgs.First = first
-	kmArgs.NewPoints = newPoints
-	kmArgs.Last = last
+	initMapArgs.First = first
+	initMapArgs.NewPoints = newPoints
+	initMapArgs.Last = last
 
 	if !first { // if not first chunk to be sent -> centroids already transmitted
-		kmArgs.Centroids = nil
+		initMapArgs.Centroids = nil
 	} else {
-		kmArgs.Centroids = centroids
+		initMapArgs.Centroids = centroids
 	}
 
 	// Marshaling
-	mArgs, err := json.Marshal(&kmArgs)
+	mArgs, err := json.Marshal(&initMapArgs)
 	errorHandler(err, 259)
 
 	return mArgs
 }
 
 /*
- * Prepares a MapInput object for the k-means iteration with the new centroids for each of the Mappers.
+ * Prepares a InitMapInput object for the k-means iteration with the new centroids for each of the Mappers.
  */
 func prepareMapArgs(mapperId int, centroids utils.Points) []byte {
-	// Arguments
-	kmArgs := new(MapInput)
-	kmArgs.Id = mapperId
-	kmArgs.Centroids = centroids
+	// arg
+	mapArg := new(MapInput)
+	mapArg.MapperId = mapperId
+	mapArg.Centroids = centroids
 
 	// Marshaling
-	mArgs, err := json.Marshal(&kmArgs)
-	errorHandler(err, 259)
+	mArgs, err := json.Marshal(&mapArg)
+	errorHandler(err, 655)
 
 	return mArgs
 }
 
-func computeNewCentroids(resp [][]byte) utils.Points {
+func prepareReduceArgs(clusterId int, points utils.Points, length int) []byte {
+	// arg
+	redArg := new(ReduceInput)
+	redArg.ClusterId = clusterId
+	redArg.Points = points
+	redArg.Len = length
 
-	var newCentroids utils.Points
-	dim := len(resp)
+	rArgs, err := json.Marshal(&redArg)
+	errorHandler(err, 149)
 
-	for i := 0; i < dim; i++ {
-		var centroid utils.Point
+	return rArgs
+}
+
+func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points {
+
+	newCentroids := make(utils.Points, len(oldCentroids))
+	copy(newCentroids, oldCentroids)
+
+	var out ReduceOutput
+	for _, r := range resp {
 		// unmarshalling
-		err := json.Unmarshal(resp[i], &centroid)
-		errorHandler(err, 344)
+		err := json.Unmarshal(r, &out)
+		errorHandler(err, 682)
 
-		newCentroids = append(newCentroids, centroid)
+		// compute
+		var centroid utils.Point
+		centroid.Coordinates = make([]float64, len(out.Point.Coordinates))
+		for j, coord := range out.Point.Coordinates {
+			centroid.Coordinates[j] = coord / float64(out.Len)
+		}
+
+		newCentroids[out.ClusterId] = centroid
 	}
 
 	return newCentroids
 }
 
-/*
- * Compute the amount of changes that have been applied in the latest iteration
- */
-func computeDelta(newClusters utils.Clusters, datasetDim int) float64 {
-	delta := 0.0
+// compute the amount of changes that have been applied in the latest iteration
+func computeDelta(oldCentroids utils.Points, newCentroids utils.Points) float64 {
+	dim := len(oldCentroids)
 
-	for _, c := range newClusters {
-		for _, p := range c.Points {
-			if p.From != p.To {
-				delta++
-			}
-		}
+	delta := 0.0
+	for i := 0; i < dim; i++ {
+		delta += utils.GetDistance(oldCentroids[i].Coordinates, newCentroids[i].Coordinates)
 	}
 
-	return delta / float64(datasetDim)
+	return delta / float64(dim)
 }
 
 // error handling

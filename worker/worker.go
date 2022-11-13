@@ -20,32 +20,49 @@ type Worker struct {
 }
 
 type Combiner struct {
-	MapOut     utils.Clusters
 	InitMapOut InitMapOutput
+	MapOut     MapOutput
 }
 
-// MapInput : valid for both map services
-// --> list of current centroids to use
-// --> chunk of dataset points to process
-type MapInput struct {
-	Id        int
-	Centroids utils.Points
-	Points    utils.Points
-	NewPoints bool
+type InitMapInput struct {
+	MapperId  int
 	First     bool
+	Centroids utils.Points
+	NewPoints bool
+	Chunk     utils.Points
 	Last      bool
 }
 
-// InitMapOutput : used as output for the initialization map phase
-// --> chunk of dataset points to process
-// --> minimum distances of each point from each centroid
 type InitMapOutput struct {
 	Points       utils.Points
 	MinDistances []float64
 }
 
+type MapInput struct {
+	MapperId  int
+	Centroids utils.Points
+}
+
+type MapOutput struct {
+	ClusterId []int
+	Points    []utils.Points
+	Len       []int
+}
+
+type ReduceInput struct {
+	ClusterId int
+	Points    utils.Points
+	Len       int
+}
+
+type ReduceOutput struct {
+	ClusterId int
+	Point     utils.Point
+	Len       int
+}
+
 const (
-	debug        = true
+	debug        = false
 	network      = "tcp"
 	addressLocal = "localhost:5678"
 	maxNodes     = 10
@@ -56,22 +73,21 @@ const (
 // --> output: chunk of points processed and their minimum distance from the set of centroids
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	// unmarshalling
-	var inArgs MapInput
+	var inArgs InitMapInput
 	err := json.Unmarshal(payload, &inArgs)
-	errorHandler(err, 34)
+	errorHandler(err, 72)
 
 	// select mapper
-	idx := inArgs.Id
+	idx := inArgs.MapperId
 	mapper := &w.Mappers[idx]
 
 	// store data
 	if inArgs.First {
 		mapper.Centroids = inArgs.Centroids
 	}
-
 	if inArgs.NewPoints {
-		mapper.Chunks = append(mapper.Chunks, inArgs.Points)
-		mapper.Dim += len(inArgs.Points)
+		mapper.Chunks = append(mapper.Chunks, inArgs.Chunk)
+		mapper.Dim += len(inArgs.Chunk)
 	}
 
 	// send ack
@@ -88,11 +104,16 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	}
 
 	comb := new(Combiner)
-	for i := 0; i < len(mapper.Chunks); i++ {
+	for _, chunk := range mapper.Chunks {
 		// map
-		initMapOutput := computeMinDistances(mapper.Chunks[i], mapper.Centroids)
+		localOutput := computeMinDistances(chunk, mapper.Centroids)
 		// combine
-		comb.initCombine(initMapOutput)
+		comb.initCombine(localOutput)
+	}
+
+	if debug {
+		log.Printf("--> MAPPER %d: combined %d points in %d",
+			idx, mapper.Dim, len(comb.InitMapOut.Points))
 	}
 
 	// marshalling
@@ -104,8 +125,16 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	return nil
 }
 
+// Performs a combine phase for a local map output before giving the result to the master
+func (c *Combiner) initCombine(inArgs InitMapOutput) {
+	combRes, dist := getFartherPoint(inArgs)
+
+	c.InitMapOut.Points = append(c.InitMapOut.Points, combRes)
+	c.InitMapOut.MinDistances = append(c.InitMapOut.MinDistances, dist)
+}
+
 // InitReduce
-// --> input : complete set of points and their minimum distance from the current set of centroids
+// --> input : set of points and their minimum distance from the current set of centroids
 // --> output: new centroid
 func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 	var inArgs InitMapOutput
@@ -114,6 +143,7 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
+
 	if debug {
 		log.Printf("--> REDUCER: received %d points to choose the centroid from",
 			len(inArgs.Points))
@@ -143,60 +173,86 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	errorHandler(err, 34)
 
 	// select mapper
-	id := inArgs.Id
+	id := inArgs.MapperId
 	mapper := &w.Mappers[id]
 	mapper.Centroids = inArgs.Centroids
 	if debug {
-		log.Printf("--> MAPPER [%d] received %d new centroids.", id, len(mapper.Centroids))
+		log.Printf("--> MAPPER [%d]: received %d new centroids.", id, len(mapper.Centroids))
 	}
 
-	var mapRes utils.Clusters
-	// prepare clusters with initial centroids
-	mapRes = make(utils.Clusters, len(mapper.Centroids))
-	for i, centroid := range mapper.Centroids {
-		mapRes[i].Centroid = centroid
-	}
 	// classify each given point to a cluster
-	var idx int
-	//comb := new(Combiner)
-	for _, points := range mapper.Chunks {
+	//dim := len(mapper.Centroids)
+	comb := new(Combiner)
+	for _, chunk := range mapper.Chunks {
+		var clusterId []int
+		var length []int
+		var points utils.Points
 		// map
-		for _, point := range points {
-			idx = classify(mapper.Centroids, point)
-			point.From = point.To
-			point.To = idx
-			mapRes[idx].Points = append(mapRes[idx].Points, point)
+		for _, point := range chunk {
+			idx, _ := classify(mapper.Centroids, point)
+
+			clusterId = append(clusterId, idx)
+			points = append(points, point)
+			length = append(length, 1)
 		}
 		// combine
-		//comb.combine(mapRes)
+		comb.combine(clusterId, points, length)
 	}
 
-	// Marshalling
-	s, err := json.Marshal(&mapRes)
-	errorHandler(err, 50)
+	// marshalling
+	s, err := json.Marshal(&comb.MapOut)
+	errorHandler(err, 202)
 
 	// return
 	*result = s
 	return nil
 }
 
+// computes the partial sum of each point in each partial cluster obtained from mapper
+func (c *Combiner) combine(clusterId []int, points utils.Points, length []int) {
+	//combine
+	for i, cid := range clusterId {
+		isIn, idx := isIn(cid, c.MapOut.ClusterId)
+		if !isIn {
+			c.MapOut.ClusterId = append(c.MapOut.ClusterId, cid)
+			idx = len(c.MapOut.ClusterId) - 1
+
+			newPoints := new(utils.Points)
+			c.MapOut.Points = append(c.MapOut.Points, *newPoints)
+
+			newLength := 0
+			c.MapOut.Len = append(c.MapOut.Len, newLength)
+		}
+
+		c.MapOut.Points[idx] = append(c.MapOut.Points[idx], points[i])
+		c.MapOut.Len[idx] += length[i]
+	}
+}
+
+func isIn(cid int, id []int) (bool, int) {
+	for idx, i := range id {
+		if cid == i {
+			return true, idx
+		}
+	}
+	return false, -1
+}
+
 // Reduce -> recenter /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
 func (w *Worker) Reduce(payload []byte, result *[]byte) error {
-	var inArgs utils.Cluster
+	var inArgs ReduceInput
 
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
 	if debug {
-		log.Printf("--> REDUCER: received %d points to recenter", len(inArgs.Points))
+		log.Printf("REDUCER [%d]: received %d points to recenter.", inArgs.ClusterId, len(inArgs.Points))
 	}
 
-	var redRes utils.Point
-	if len(inArgs.Points) == 0 {
-		redRes = inArgs.Centroid
-	} else {
-		redRes = recenter(inArgs.Points)
-	}
+	var redRes ReduceOutput
+	redRes.ClusterId = inArgs.ClusterId
+	redRes.Point = recenter(inArgs.Points, len(inArgs.Points[0].Coordinates))
+	redRes.Len = inArgs.Len
 
 	// marshalling
 	s, err := json.Marshal(&redRes)
@@ -205,14 +261,6 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	//return
 	*result = s
 	return nil
-}
-
-// Performs a combine phase for a local map output before giving the result to the master
-func (c *Combiner) initCombine(inArgs InitMapOutput) {
-	combRes, dist := getFartherPoint(inArgs)
-
-	c.InitMapOut.Points = append(c.InitMapOut.Points, combRes)
-	c.InitMapOut.MinDistances = append(c.InitMapOut.MinDistances, dist)
 }
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
@@ -238,21 +286,18 @@ func main() {
 }
 
 /*------------------------------------------------------ LOCAL FUNCTIONS ---------------------------------------------*/
+// compute the minimum distance between each point and the set of centroids
 func computeMinDistances(points utils.Points, centroids utils.Points) InitMapOutput {
 	var mapOut InitMapOutput
+	mapOut.Points = make(utils.Points, len(points))
+	mapOut.MinDistances = make([]float64, len(points))
 
-	for _, point := range points {
-		// compute the distance between each point and each centroid
-		var dist float64
-		for i, centroid := range centroids {
-			tempDist := utils.GetDistance(point.Coordinates, centroid.Coordinates)
-			if i == 0 || dist > tempDist {
-				dist = tempDist
-			}
-		}
+	for i, point := range points {
+		_, dist := classify(centroids, point)
+
 		// store the point and its minimum distance from the centroids
-		mapOut.Points = append(mapOut.Points, point)
-		mapOut.MinDistances = append(mapOut.MinDistances, dist)
+		mapOut.Points[i] = point
+		mapOut.MinDistances[i] = dist
 	}
 
 	return mapOut
@@ -274,41 +319,40 @@ func getFartherPoint(inArgs InitMapOutput) (utils.Point, float64) {
 	return inArgs.Points[index], maxDist
 }
 
-// Returns the index of the centroid the point is closer to
-func classify(centroids utils.Points, point utils.Point) int {
+// compute the minimum distance between a point and the set of centroids
+func classify(centroids utils.Points, point utils.Point) (int, float64) {
 	var idx int
 	var tempDist float64
 
 	dist := 0.0
 	for i, centroid := range centroids {
 		tempDist = utils.GetDistance(point.Coordinates, centroid.Coordinates)
-		if dist == 0.0 || dist > tempDist {
+		if i == 0 || dist > tempDist {
 			dist = tempDist
 			idx = i
 		}
 	}
 
-	return idx
+	return idx, dist
 }
 
-// recenter the given cluster
-func recenter(points utils.Points) utils.Point {
-	var centroid utils.Point
-	centroid.Coordinates = make([]float64, len(points[0].Coordinates))
+// sum the coordinates of the set of points
+func recenter(points utils.Points, dim int) utils.Point {
 
-	for _, point := range points {
-		for j := 0; j < len(point.Coordinates); j++ {
-			centroid.Coordinates[j] += point.Coordinates[j]
+	var res utils.Point
+
+	sum := make([]float64, dim)
+	for _, p := range points {
+		for i, c := range p.Coordinates {
+			sum[i] += c
 		}
 	}
 
-	for i := 0; i < len(centroid.Coordinates); i++ {
-		centroid.Coordinates[i] = centroid.Coordinates[i] / float64(len(points))
-	}
-
-	return centroid
+	res.Coordinates = sum
+	return res
 }
 
+/*---------------------------------------------------- UTILS ---------------------------------------------------------*/
 // error handling
 func errorHandler(err error, line int) {
 	if err != nil {

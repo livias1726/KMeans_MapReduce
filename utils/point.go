@@ -11,8 +11,6 @@ import (
 // --> index of the cluster to which it belongs
 type Point struct {
 	Coordinates []float64
-	From        int
-	To          int
 }
 type Points []Point
 
@@ -39,6 +37,7 @@ func ExtractPoints(dataset [][]string) (Points, error) {
 }
 
 // GetDistance returns the euclidean distance between two points
+// --> usage: WORKER.computeMinDistances; WORKER.classify
 func GetDistance(p1 []float64, p2 []float64) float64 {
 	var dist float64
 
@@ -76,17 +75,6 @@ func GetAvgDistanceOfSet(points Points) float64 {
 
 	for _, p := range points {
 		d += GetAvgDistance(p, points)
-	}
-
-	return d / dim
-}
-
-func GetAvgCapacityOfSet(points []Points) int {
-	dim := len(points)
-	d := 0
-
-	for _, ps := range points {
-		d += len(ps)
 	}
 
 	return d / dim

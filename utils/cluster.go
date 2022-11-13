@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"math/rand"
 )
 
@@ -12,7 +11,7 @@ type Cluster struct {
 
 type Clusters []Cluster
 
-// Init : dummy initialization by randomly selecting k points from dataset
+// Init : centroids initialization by random selection of 1 point from the dataset
 func Init(k int, dataset Points) (Points, error) {
 	var centroids Points
 
@@ -22,48 +21,4 @@ func Init(k int, dataset Points) (Points, error) {
 	}
 
 	return centroids, nil
-}
-
-// returns the centroid of a set of points
-func (cluster Cluster) setCentroid() error {
-	var centroid Point
-
-	var l = len(cluster.Points)
-	if l == 0 {
-		return fmt.Errorf("empty cluster")
-	}
-
-	centroid.Coordinates = make([]float64, len(cluster.Points[0].Coordinates))
-	for _, point := range cluster.Points {
-		for i, val := range point.Coordinates {
-			centroid.Coordinates[i] += val // sum every coordinate in the coordinates of the centroid
-		}
-	}
-
-	/*
-		var mean DatasetPoints
-		for _, sum := range centroid.Coordinates {
-			mean = append(mean, sum/float64(l))
-		}
-
-	*/
-
-	cluster.Centroid = centroid
-	return nil
-}
-
-// Nearest returns the index of the cluster nearest to point
-func (c Clusters) Nearest(point Point) int {
-	var idx int
-	dist := -1.0
-
-	for i, cluster := range c {
-		d := GetDistance(point.Coordinates, cluster.Centroid.Coordinates)
-		if dist < 0 || d < dist {
-			dist = d
-			idx = i
-		}
-	}
-
-	return idx
 }
