@@ -6,7 +6,6 @@ services:
       - 11090:11090
     expose:
       - 11090
-    restart: always
     
   worker:
     image: alpine:latest
@@ -15,4 +14,3 @@ services:
       - 11091:11091
     expose:
       - 11091
-    restart: always
