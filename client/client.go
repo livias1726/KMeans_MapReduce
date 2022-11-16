@@ -37,7 +37,7 @@ type KMResponse struct {
 
 const (
 	debug    = true // Set to true to activate debug log
-	datapath = "client/dataset/"
+	datapath = "client/../data"
 	//outfile  = "k-means.png"
 	network  = "tcp"
 	address  = "localhost"

@@ -1,0 +1,22 @@
+services:
+  master:
+    image: go-test:latest
+    command: sh -c "/mapreduce/start_master.sh"
+    ports:
+      - 11090:11090
+    expose:
+      - 11090
+    volumes:
+      - ./TinyDFS:/dfs/TinyDFS
+    restart: always
+    
+  worker:
+    image: go-test:latest
+    command: sh -c "/mapreduce/start_worker.sh"
+    ports:
+      - 11091:11091
+    expose:
+      - 11091
+    volumes:
+      - ./TinyDFS:/dfs/TinyDFS
+    restart: always

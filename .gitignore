@@ -1,6 +1,5 @@
 .idea/
-client/dataset/*
+data/*
 
 go.mod
 go.sum
-golang_icon_no_bg.png
