@@ -62,7 +62,7 @@ type ReduceOutput struct {
 }
 
 const (
-	debug        = false
+	debug        = true
 	network      = "tcp"
 	addressLocal = "localhost:5678"
 	maxNodes     = 10

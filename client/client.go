@@ -20,8 +20,10 @@ import (
 // --> dataset points extracted locally
 // --> number of clusters to create
 type KMRequest struct {
+	IP      string
 	Dataset utils.Points
 	K       int
+	First   bool
 	Last    bool
 }
 
@@ -46,10 +48,14 @@ const (
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 
-	var reply []byte
-	var ack bool
-	var cli *rpc.Client
-	var err error
+	var (
+		reply  []byte
+		ack    bool
+		cli    *rpc.Client
+		err    error
+		mArgs  []byte
+		result KMResponse
+	)
 
 	// check for open TCP ports
 	connect(&cli)
@@ -62,21 +68,21 @@ func main() {
 
 	// send 10k points per message
 	numMessages := int(math.Ceil(float64(dim) / float64(maxChunk)))
-	var mArgs []byte
 	counter := 0
 	k := new(int)
 	*k = 0
 
 	start := time.Now() // take execution time
+	log.Print("Transmitting data...")
 	for i := 0; i < numMessages; i++ {
-		// flag the last points to be sent
+		first := i == 0
 		last := i == numMessages-1
 
 		// get marshalled request
 		if (dim - counter) > maxChunk {
-			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, last)
+			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, first, last)
 		} else {
-			mArgs = prepareArguments(dataset[counter:dim], k, dim, last)
+			mArgs = prepareArguments(dataset[counter:dim], k, dim, first, last)
 		}
 
 		// call the service
@@ -104,7 +110,6 @@ func main() {
 	}
 
 	// unmarshalling of reply
-	var result KMResponse
 	err = json.Unmarshal(reply, &result)
 	errorHandler(err, 125)
 
@@ -121,7 +126,7 @@ func connect(cli **rpc.Client) {
 			if debug {
 				log.Printf("--> port %v is not active", p)
 			}
-			log.Print("Connecting to master...\n")
+			log.Print("Connecting to the server...")
 			continue
 		}
 
@@ -135,9 +140,10 @@ func connect(cli **rpc.Client) {
 }
 
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
-func prepareArguments(rawPoints [][]string, k *int, max int, last bool) []byte {
+func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bool) []byte {
 	var err error
 	kmRequest := new(KMRequest)
+	kmRequest.IP = address
 
 	// dataset
 	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
@@ -151,7 +157,8 @@ func prepareArguments(rawPoints [][]string, k *int, max int, last bool) []byte {
 		kmRequest.K = *k
 	}
 
-	// last
+	// flags
+	kmRequest.First = first
 	kmRequest.Last = last
 
 	// marshalling
@@ -222,6 +229,7 @@ func scanK(max int) int {
 }
 
 /*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
+//TODO: create output file or receive output file
 func showResults(result KMResponse, elapsed time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)

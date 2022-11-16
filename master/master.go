@@ -16,9 +16,7 @@ import (
 //TODO: balance the load on the reducers (and ss phase if possible)
 
 type MasterServer struct {
-	//Clients    []MasterClient //TODO: be able to serve multiple clients simultaneously
-	Dataset    utils.Points
-	DatasetDim int
+	Clients map[string]*MasterClient
 }
 
 type MasterClient struct {
@@ -27,6 +25,7 @@ type MasterClient struct {
 
 // Configuration :
 type Configuration struct {
+	Dataset            utils.Points
 	K                  int
 	CurrentCentroids   utils.Points     // list of current centroids to re-send to mappers
 	InputPoints        [][]utils.Points // chunks of dataset points divided by mapper
@@ -40,8 +39,10 @@ type Configuration struct {
 
 // KMRequest : matches with struct on client side
 type KMRequest struct {
+	IP      string
 	Dataset utils.Points
 	K       int
+	First   bool
 	Last    bool
 }
 
@@ -99,22 +100,31 @@ const (
 	maxLoad            = 1000 //every worker operates on a maximum of 'maxLoad' points
 	maxNodes           = 10
 	deltaThreshold     = 0.01
-	iterationThreshold = 15
+	iterationThreshold = 100
 )
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
 func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
-	var kmRequest KMRequest
-	var err error
-	var s []byte
+	var (
+		kmRequest KMRequest
+		err       error
+		s         []byte
+		resp      KMResponse
+	)
 
 	// unmarshalling
 	err = json.Unmarshal(payload, &kmRequest)
 	errorHandler(err, 51)
 
+	// get client
+	if kmRequest.First {
+		mc := new(MasterClient)
+		m.Clients[kmRequest.IP] = mc
+	}
+	mc := m.Clients[kmRequest.IP]
+
 	// store new points
-	m.Dataset = append(m.Dataset, kmRequest.Dataset...)
-	m.DatasetDim += len(kmRequest.Dataset)
+	mc.Config.Dataset = append(mc.Config.Dataset, kmRequest.Dataset...)
 
 	// send ack
 	if !kmRequest.Last {
@@ -125,19 +135,17 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 		return err
 	}
 
+	// finalize
+	mc.Config.K = kmRequest.K
 	if debug {
-		log.Printf("--> received %d points to cluster in %d groups.",
-			m.DatasetDim, kmRequest.K)
+		log.Printf("--> received %d points from %s to cluster in %d groups.",
+			len(mc.Config.Dataset), kmRequest.IP, mc.Config.K)
 	}
 
 	// call the service
-	master := new(MasterClient)
-	//m.Clients = append(m.Clients, *master)
-
-	result, msg := master.KMeans(m.Dataset, kmRequest.K)
+	result, msg := mc.KMeans()
 
 	// preparing response
-	var resp KMResponse
 	resp.Clusters = result
 	resp.Message = msg
 
@@ -145,9 +153,7 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	s, err = json.Marshal(&resp)
 	errorHandler(err, 125)
 
-	//cleanup
-	m.Dataset = nil
-	m.DatasetDim = 0
+	//TODO: cleanup client
 
 	// return
 	if debug {
@@ -158,14 +164,11 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 }
 
 // KMeans /*------------------------------------- REMOTE PROCEDURE - WORKER SIDE -------------------------------------*/
-func (mc *MasterClient) KMeans(dataset utils.Points, k int) (utils.Clusters, string) {
-	conf := new(Configuration)
-
-	// initialize configuration
-	conf.K = k
+func (mc *MasterClient) KMeans() (utils.Clusters, string) {
+	conf := mc.Config
 
 	// divide the dataset among the mappers
-	conf.InputPoints, conf.NumMappers = getChunks(dataset)
+	conf.InputPoints, conf.NumMappers = getChunks(conf.Dataset)
 	if debug {
 		log.Printf("--> %d mappers to spawn with %d chunks.\n",
 			len(conf.InputPoints), len(conf.InputPoints[0]))
@@ -180,7 +183,7 @@ func (mc *MasterClient) KMeans(dataset utils.Points, k int) (utils.Clusters, str
 	}
 
 	// perform k-means++
-	kMeanspp(conf, dataset)
+	kMeanspp(&conf, conf.Dataset)
 	if debug {
 		log.Printf("--> initialized %d centroids with average distance of %f.\n",
 			len(conf.CurrentCentroids), utils.GetAvgDistanceOfSet(conf.CurrentCentroids))
@@ -190,7 +193,7 @@ func (mc *MasterClient) KMeans(dataset utils.Points, k int) (utils.Clusters, str
 	conf.IterationThreshold = iterationThreshold
 
 	// perform k-means
-	clusters, logMsg := kMeans(conf)
+	clusters, logMsg := kMeans(&conf)
 
 	return clusters, logMsg
 }
@@ -225,7 +228,7 @@ func initMap(conf Configuration, iteration int) [][]byte {
 			channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil)
 		}
 		// wait for ack
-		if !last { //TODO: does not ack last chunk
+		if !last {
 			checkAck(conf, channels, results, i, first, newPoints, last)
 		}
 	}
@@ -374,16 +377,17 @@ func main() {
 	portNum := rand.Intn(max-min) + min
 	port := strconv.Itoa(portNum)
 
-	// spawn async server
-	go serveClients(port)
-
 	// publish methods
 	master := new(MasterServer)
+	master.Clients = make(map[string]*MasterClient)
 	err := rpc.Register(master)
 	errorHandler(err, 180)
 	if debug {
 		log.Print("--> master node is online.\n")
 	}
+
+	// spawn async server
+	go serveClients(port)
 
 	select {} //infinite loop
 }
