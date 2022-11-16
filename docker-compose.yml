@@ -1,6 +1,6 @@
 services:
   master:
-    image: alpine:latest
+    image: kmeans_mr:latest
     command: sh -c "/mapreduce/start_master.sh"
     ports:
       - 11090:11090
@@ -8,7 +8,7 @@ services:
       - 11090
     
   worker:
-    image: alpine:latest
+    image: kmeans_mr:latest
     command: sh -c "/mapreduce/start_worker.sh"
     ports:
       - 11091:11091

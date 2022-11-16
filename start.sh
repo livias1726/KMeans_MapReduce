@@ -1,8 +1,3 @@
-# rm -rf ./TinyDFS/*
-# rm -f local-*
-
-#docker-compose stop
-#docker build -t go-test .
-
+docker build -t kmeans_mr .
 docker-compose up -d
 
