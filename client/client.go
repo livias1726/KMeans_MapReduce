@@ -37,7 +37,7 @@ type KMResponse struct {
 
 const (
 	debug    = true // Set to true to activate debug log
-	datapath = "client/data"
+	datapath = "client/data/"
 	//outfile  = "k-means.png"
 	network  = "tcp"
 	address  = "localhost"
@@ -143,7 +143,7 @@ func connect(cli **rpc.Client) {
 func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bool) []byte {
 	var err error
 	kmRequest := new(KMRequest)
-	kmRequest.IP = address
+	kmRequest.IP = getIPAddress()
 
 	// dataset
 	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
@@ -166,6 +166,16 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	errorHandler(err, 102)
 
 	return s
+}
+
+func getIPAddress() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	errorHandler(err, 172)
+	defer fileClose(conn)
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP.String()
 }
 
 func listDatasets(dirpath string) string {

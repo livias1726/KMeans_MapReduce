@@ -3,14 +3,15 @@ services:
     image: kmeans_mr:latest
     command: sh -c "/mapreduce/start_master.sh"
     ports:
-      - 11090:11090
-    expose:
-      - 11090
+      #- 11090:11090
+      - 50000-50005
+    #expose:
+    #  - 11090
     
   worker:
     image: kmeans_mr:latest
     command: sh -c "/mapreduce/start_worker.sh"
     ports:
-      - 11091:11091
-    expose:
-      - 11091
+      - 5678
+    #expose:
+    #  - 11091
