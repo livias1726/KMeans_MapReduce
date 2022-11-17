@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"net"
 	"net/rpc"
-	"strconv"
-	"time"
 )
 
 //TODO: balance the load on the reducers (and ss phase if possible)
@@ -91,7 +88,8 @@ type ReduceOutput struct {
 
 const (
 	debug              = true
-	network            = "tcp"
+	networkProtocol    = "tcp"
+	port               = "50000"
 	workerAddress      = "localhost:5678"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
@@ -371,11 +369,13 @@ func reduce(conf Configuration, args MapOutput) [][]byte {
 /*------------------------------------------------------ MAIN -------------------------------------------------------*/
 func main() {
 	// generate a random port for the client
-	rand.Seed(time.Now().UTC().UnixNano())
-	max := 50005
-	min := 50000
-	portNum := rand.Intn(max-min) + min
-	port := strconv.Itoa(portNum)
+	/*
+		rand.Seed(time.Now().UTC().UnixNano())
+		max := 50005
+		min := 50000
+		portNum := rand.Intn(max-min) + min
+		port := strconv.Itoa(portNum)
+	*/
 
 	// publish methods
 	master := new(MasterServer)
@@ -387,20 +387,20 @@ func main() {
 	}
 
 	// spawn async server
-	go serveClients(port)
+	go serveClients()
 
 	select {} //infinite loop
 }
 
-func serveClients(port string) {
-	addr, err := net.ResolveTCPAddr(network, "0.0.0.0:"+port)
+func serveClients() {
+	addr, err := net.ResolveTCPAddr(networkProtocol, "0.0.0.0:"+port)
 	errorHandler(err, 337)
 
 	// register a HTTP handler
 	rpc.HandleHTTP()
 
 	// listen to TCP connections
-	listen, err := net.ListenTCP(network, addr)
+	listen, err := net.ListenTCP(networkProtocol, addr)
 	errorHandler(err, 344)
 
 	log.Printf("Serving RPCs on workerAddress %s\n", addr)
@@ -462,7 +462,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 	mappers := make([]*rpc.Client, numMappers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numMappers; i++ {
-		mappers[i], err = rpc.DialHTTP(network, workerAddress)
+		mappers[i], err = rpc.DialHTTP(networkProtocol, workerAddress)
 		errorHandler(err, 454)
 	}
 
@@ -470,7 +470,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 	reducers := make([]*rpc.Client, numReducers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numReducers; i++ {
-		reducers[i], err = rpc.DialHTTP(network, workerAddress)
+		reducers[i], err = rpc.DialHTTP(networkProtocol, workerAddress)
 		errorHandler(err, 462)
 	}
 

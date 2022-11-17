@@ -39,10 +39,11 @@ const (
 	debug    = true // Set to true to activate debug log
 	datapath = "client/data/"
 	//outfile  = "k-means.png"
-	network  = "tcp"
-	address  = "localhost"
-	service  = "MasterServer.KMeans"
-	maxChunk = 10000
+	network    = "tcp"
+	address    = "localhost"
+	masterPort = 50000
+	service    = "MasterServer.KMeans"
+	maxChunk   = 10000
 )
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
@@ -117,26 +118,44 @@ func main() {
 }
 
 func connect(cli **rpc.Client) {
+	log.Print("Connecting to the server...")
+
 	var err error
 
-	for p := 50000; p <= 50005; p++ {
-		port := strconv.Itoa(p)
-		*cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
-		if err != nil {
-			if debug {
-				log.Printf("--> port %v is not active", p)
-			}
-			log.Print("Connecting to the server...")
-			continue
-		}
-
-		if *cli != nil {
-			//create a TCP connection to localhost
-			net.JoinHostPort(address, port)
-			log.Printf("Connected on port %v", p)
-			break
+	port := strconv.Itoa(masterPort)
+	*cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
+	if err != nil {
+		if debug {
+			log.Printf("--> port %v is not active", masterPort)
 		}
 	}
+
+	if *cli != nil {
+		//create a TCP connection to localhost
+		net.JoinHostPort(address, port)
+		log.Printf("Connected on port %v", masterPort)
+	}
+
+	/*
+		for p := 50000; p <= 50005; p++ {
+			port := strconv.Itoa(p)
+			*cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
+			if err != nil {
+				if debug {
+					log.Printf("--> port %v is not active", p)
+				}
+				log.Print("Connecting to the server...")
+				continue
+			}
+
+			if *cli != nil {
+				//create a TCP connection to localhost
+				net.JoinHostPort(address, port)
+				log.Printf("Connected on port %v", p)
+				break
+			}
+		}
+	*/
 }
 
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
