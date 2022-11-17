@@ -92,7 +92,7 @@ type ReduceOutput struct {
 const (
 	debug              = true
 	network            = "tcp"
-	address            = "localhost:5678"
+	workerAddress      = "localhost:5678"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
@@ -403,7 +403,7 @@ func serveClients(port string) {
 	listen, err := net.ListenTCP(network, addr)
 	errorHandler(err, 344)
 
-	log.Printf("Serving RPCs on address %s\n", addr)
+	log.Printf("Serving RPCs on workerAddress %s\n", addr)
 
 	// serve new clients
 	for {
@@ -462,7 +462,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 	mappers := make([]*rpc.Client, numMappers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numMappers; i++ {
-		mappers[i], err = rpc.DialHTTP(network, address)
+		mappers[i], err = rpc.DialHTTP(network, workerAddress)
 		errorHandler(err, 454)
 	}
 
@@ -470,7 +470,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 	reducers := make([]*rpc.Client, numReducers)
 	// create a TCP connection to localhost on port 5678
 	for i := 0; i < numReducers; i++ {
-		reducers[i], err = rpc.DialHTTP(network, address)
+		reducers[i], err = rpc.DialHTTP(network, workerAddress)
 		errorHandler(err, 462)
 	}
 
