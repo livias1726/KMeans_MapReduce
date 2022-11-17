@@ -1,3 +1,4 @@
-data/*
-client/*
+client/
 .idea/
+go.mod
+README.md
