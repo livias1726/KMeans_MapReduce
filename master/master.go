@@ -90,7 +90,7 @@ const (
 	debug              = true
 	networkProtocol    = "tcp"
 	port               = "11090"
-	workerAddress      = "0.0.0.0:11091"
+	workerAddress      = "worker:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
@@ -382,7 +382,7 @@ func main() {
 }
 
 func serveClients() {
-	addr, err := net.ResolveTCPAddr(networkProtocol, "0.0.0.0:"+port)
+	addr, err := net.ResolveTCPAddr(networkProtocol, "master:"+port)
 	errorHandler(err, 337)
 
 	// register a HTTP handler

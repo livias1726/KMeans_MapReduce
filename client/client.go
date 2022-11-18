@@ -106,9 +106,6 @@ func main() {
 		}
 	}
 	elapsed := time.Since(start)
-	if debug {
-		log.Print("--> service returned.")
-	}
 
 	// unmarshalling of reply
 	err = json.Unmarshal(reply, &result)
@@ -124,38 +121,13 @@ func connect(cli **rpc.Client) {
 
 	port := strconv.Itoa(masterPort)
 	*cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
-	if err != nil {
-		if debug {
-			log.Printf("--> port %v is not active", masterPort)
-		}
-	}
+	errorHandler(err, 126)
 
 	if *cli != nil {
 		//create a TCP connection to localhost
 		net.JoinHostPort(address, port)
 		log.Printf("Connected on port %v", masterPort)
 	}
-
-	/*
-		for p := 50000; p <= 50005; p++ {
-			port := strconv.Itoa(p)
-			*cli, err = rpc.Dial(network, net.JoinHostPort(address, port))
-			if err != nil {
-				if debug {
-					log.Printf("--> port %v is not active", p)
-				}
-				log.Print("Connecting to the server...")
-				continue
-			}
-
-			if *cli != nil {
-				//create a TCP connection to localhost
-				net.JoinHostPort(address, port)
-				log.Printf("Connected on port %v", p)
-				break
-			}
-		}
-	*/
 }
 
 /*------------------------------------------------------- PRE-PROCESSING ---------------------------------------------*/
@@ -220,10 +192,6 @@ func listDatasets(dirpath string) string {
 
 func readDataset(filename string) [][]string {
 	//read file content
-	if debug {
-		log.Printf("--> reading from %s ...", filename)
-	}
-
 	file, err := os.Open(filename)
 	errorHandler(err, 140)
 	defer fileClose(file)

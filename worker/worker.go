@@ -64,7 +64,7 @@ type ReduceOutput struct {
 const (
 	debug        = true
 	network      = "tcp"
-	addressLocal = "0.0.0.0:11091"
+	addressLocal = "worker:11091"
 	maxNodes     = 10
 )
 
