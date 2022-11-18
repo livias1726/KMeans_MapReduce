@@ -4,8 +4,6 @@ services:
     command: sh -c "/mapreduce/start_master.sh"
     ports:
       - 11090:11090
-    expose:
-      - 50000
     
   worker:
     image: kmeans_mr:latest

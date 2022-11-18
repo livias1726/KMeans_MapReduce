@@ -89,8 +89,8 @@ type ReduceOutput struct {
 const (
 	debug              = true
 	networkProtocol    = "tcp"
-	port               = "50000"
-	workerAddress      = "localhost:5678"
+	port               = "11090"
+	workerAddress      = "0.0.0.0:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
@@ -368,23 +368,12 @@ func reduce(conf Configuration, args MapOutput) [][]byte {
 
 /*------------------------------------------------------ MAIN -------------------------------------------------------*/
 func main() {
-	// generate a random port for the client
-	/*
-		rand.Seed(time.Now().UTC().UnixNano())
-		max := 50005
-		min := 50000
-		portNum := rand.Intn(max-min) + min
-		port := strconv.Itoa(portNum)
-	*/
-
-	// publish methods
 	master := new(MasterServer)
 	master.Clients = make(map[string]*MasterClient)
+
+	// publish the methods
 	err := rpc.Register(master)
-	errorHandler(err, 180)
-	if debug {
-		log.Print("--> master node is online.\n")
-	}
+	errorHandler(err, 375)
 
 	// spawn async server
 	go serveClients()
@@ -403,7 +392,7 @@ func serveClients() {
 	listen, err := net.ListenTCP(networkProtocol, addr)
 	errorHandler(err, 344)
 
-	log.Printf("Serving RPCs on workerAddress %s\n", addr)
+	log.Printf("Serving clients on: %s\n", addr)
 
 	// serve new clients
 	for {
@@ -460,7 +449,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 
 	// mappers
 	mappers := make([]*rpc.Client, numMappers)
-	// create a TCP connection to localhost on port 5678
+	// create a TCP connection to mappers
 	for i := 0; i < numMappers; i++ {
 		mappers[i], err = rpc.DialHTTP(networkProtocol, workerAddress)
 		errorHandler(err, 454)
@@ -468,7 +457,7 @@ func createConnections(numMappers int, numReducers int) ([]*rpc.Client, []*rpc.C
 
 	// reducers
 	reducers := make([]*rpc.Client, numReducers)
-	// create a TCP connection to localhost on port 5678
+	// create a TCP connection to reducers
 	for i := 0; i < numReducers; i++ {
 		reducers[i], err = rpc.DialHTTP(networkProtocol, workerAddress)
 		errorHandler(err, 462)

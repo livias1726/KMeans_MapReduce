@@ -41,7 +41,7 @@ const (
 	//outfile  = "k-means.png"
 	network    = "tcp"
 	address    = "localhost"
-	masterPort = 50000
+	masterPort = 11090
 	service    = "MasterServer.KMeans"
 	maxChunk   = 10000
 )

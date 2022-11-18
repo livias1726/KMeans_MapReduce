@@ -64,7 +64,7 @@ type ReduceOutput struct {
 const (
 	debug        = true
 	network      = "tcp"
-	addressLocal = "localhost:5678"
+	addressLocal = "0.0.0.0:11091"
 	maxNodes     = 10
 )
 
@@ -266,20 +266,18 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
-	// Publish the receiver methods
+
+	// publish the methods
 	err := rpc.Register(worker)
 	errorHandler(err, 214)
 
-	// Register a HTTP handler
+	// register a HTTP handler
 	rpc.HandleHTTP()
-	if debug {
-		log.Print("--> worker node is online.\n")
-	}
 
-	//Listen to TCP connections on port 5678
+	// listen to TCP connections
 	listener, err := net.Listen(network, addressLocal)
 	errorHandler(err, 69)
-	log.Printf("Serving RPC server on port %d", 5678)
+	log.Printf("Serving requests on: %s", addressLocal)
 
 	err = http.Serve(listener, nil)
 	errorHandler(err, 73)
