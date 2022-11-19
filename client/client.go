@@ -37,10 +37,10 @@ type KMResponse struct {
 
 const (
 	debug    = true // Set to true to activate debug log
-	datapath = "./data/"
+	datapath = "client/data/"
 	//outfile  = "k-means.png"
 	network    = "tcp"
-	address    = "localhost"
+	address    = "3.73.91.96"
 	masterPort = 11090
 	service    = "MasterServer.KMeans"
 	maxChunk   = 10000

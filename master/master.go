@@ -87,7 +87,7 @@ type ReduceOutput struct {
 }
 
 const (
-	debug              = true
+	debug              = false
 	networkProtocol    = "tcp"
 	address            = "master:11090"
 	workerAddress      = "worker:11091"
