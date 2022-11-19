@@ -37,7 +37,7 @@ type KMResponse struct {
 
 const (
 	debug    = true // Set to true to activate debug log
-	datapath = "client/data/"
+	datapath = "./data/"
 	//outfile  = "k-means.png"
 	network    = "tcp"
 	address    = "localhost"
@@ -88,7 +88,7 @@ func main() {
 
 		// call the service
 		if debug {
-			log.Printf("--> client %p calling service %v with a %d bytes message (%d)",
+			log.Printf("--> client %p calling service %s with a %d bytes message (%d)",
 				cli, service, len(mArgs), i)
 		}
 		err = cli.Call(service, mArgs, &reply)

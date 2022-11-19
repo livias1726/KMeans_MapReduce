@@ -62,10 +62,10 @@ type ReduceOutput struct {
 }
 
 const (
-	debug        = true
-	network      = "tcp"
-	addressLocal = "worker:11091"
-	maxNodes     = 10
+	debug    = true
+	network  = "tcp"
+	address  = "worker:11091"
+	maxNodes = 10
 )
 
 // InitMap
@@ -109,11 +109,6 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 		localOutput := computeMinDistances(chunk, mapper.Centroids)
 		// combine
 		comb.initCombine(localOutput)
-	}
-
-	if debug {
-		log.Printf("--> MAPPER %d: combined %d points in %d",
-			idx, mapper.Dim, len(comb.InitMapOut.Points))
 	}
 
 	// marshalling
@@ -176,9 +171,6 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	id := inArgs.MapperId
 	mapper := &w.Mappers[id]
 	mapper.Centroids = inArgs.Centroids
-	if debug {
-		log.Printf("--> MAPPER [%d]: received %d new centroids.", id, len(mapper.Centroids))
-	}
 
 	// classify each given point to a cluster
 	//dim := len(mapper.Centroids)
@@ -275,9 +267,9 @@ func main() {
 	rpc.HandleHTTP()
 
 	// listen to TCP connections
-	listener, err := net.Listen(network, addressLocal)
+	listener, err := net.Listen(network, address)
 	errorHandler(err, 69)
-	log.Printf("Serving requests on: %s", addressLocal)
+	log.Printf("Serving requests on: %s", address)
 
 	err = http.Serve(listener, nil)
 	errorHandler(err, 73)
