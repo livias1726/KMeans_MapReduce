@@ -6,13 +6,16 @@ import (
 )
 
 // Point : represents an instance
-// --> values representing its position in the features space
-// --> index of the cluster which it belonged to
-// --> index of the cluster to which it belongs
 type Point struct {
 	Coordinates []float64
 }
 type Points []Point
+
+type Cluster struct {
+	Centroid Point
+	Points   Points
+}
+type Clusters []Cluster
 
 func ExtractPoints(dataset [][]string) (Points, error) {
 	var points Points

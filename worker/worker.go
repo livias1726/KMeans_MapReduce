@@ -16,7 +16,7 @@ type Mapper struct {
 }
 
 type Worker struct {
-	Mappers [maxNodes]Mapper
+	Mappers map[int]map[int]*Mapper //key: req_id, val: {key: chunk_id, val: Mapper}
 }
 
 type Combiner struct {
@@ -25,7 +25,7 @@ type Combiner struct {
 }
 
 type InitMapInput struct {
-	MapperId  int
+	MapperId  [2]int
 	First     bool
 	Centroids utils.Points
 	NewPoints bool
@@ -39,7 +39,7 @@ type InitMapOutput struct {
 }
 
 type MapInput struct {
-	MapperId  int
+	MapperId  [2]int
 	Centroids utils.Points
 }
 
@@ -62,10 +62,9 @@ type ReduceOutput struct {
 }
 
 const (
-	debug    = false
-	network  = "tcp"
-	address  = "worker:11091"
-	maxNodes = 10
+	debug   = false
+	network = "tcp"
+	address = "localhost:11091" //"worker:11091"
 )
 
 // InitMap
@@ -79,9 +78,16 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 
 	// select mapper
 	idx := inArgs.MapperId
-	mapper := &w.Mappers[idx]
+	if w.Mappers[idx[0]] == nil {
+		w.Mappers[idx[0]] = make(map[int]*Mapper)
+	}
+	mapperSet := w.Mappers[idx[0]]
+	if mapperSet[idx[1]] == nil {
+		mapperSet[idx[1]] = new(Mapper)
+	}
 
 	// store data
+	mapper := mapperSet[idx[1]]
 	if inArgs.First {
 		mapper.Centroids = inArgs.Centroids
 	}
@@ -169,7 +175,8 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 
 	// select mapper
 	id := inArgs.MapperId
-	mapper := &w.Mappers[id]
+	mapperSet := w.Mappers[id[0]]
+	mapper := mapperSet[id[1]]
 	mapper.Centroids = inArgs.Centroids
 
 	// classify each given point to a cluster
@@ -258,6 +265,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
+	worker.Mappers = make(map[int]map[int]*Mapper)
 
 	// publish the methods
 	err := rpc.Register(worker)

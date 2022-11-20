@@ -6,14 +6,19 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"net"
 	"net/rpc"
+	"sync"
 )
 
 //TODO: balance the load on the reducers (and ss phase if possible)
 
 type MasterServer struct {
-	Clients map[string]*MasterClient
+	NumRequests int
+	Requests    map[string]int
+	Clients     map[int]*MasterClient
+	mutex       sync.Mutex
 }
 
 type MasterClient struct {
@@ -22,6 +27,7 @@ type MasterClient struct {
 
 // Configuration :
 type Configuration struct {
+	RequestId          int
 	Dataset            utils.Points
 	K                  int
 	CurrentCentroids   utils.Points     // list of current centroids to re-send to mappers
@@ -50,7 +56,7 @@ type KMResponse struct {
 }
 
 type InitMapInput struct {
-	MapperId  int
+	MapperId  [2]int
 	First     bool
 	Centroids utils.Points
 	NewPoints bool
@@ -64,7 +70,7 @@ type InitMapOutput struct {
 }
 
 type MapInput struct {
-	MapperId  int
+	MapperId  [2]int
 	Centroids utils.Points
 }
 
@@ -87,18 +93,18 @@ type ReduceOutput struct {
 }
 
 const (
-	debug              = false
+	debug              = true
 	networkProtocol    = "tcp"
-	address            = "master:11090"
-	workerAddress      = "worker:11091"
+	address            = "localhost:11090" //"master:11090"
+	workerAddress      = "localhost:11091" //"worker:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
 	reduceService2     = "Worker.Reduce"
 	maxLoad            = 1000 //every worker operates on a maximum of 'maxLoad' points
 	maxNodes           = 10
-	deltaThreshold     = 0.01
-	iterationThreshold = 100
+	deltaThreshold     = 0.1
+	iterationThreshold = 10
 )
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
@@ -116,10 +122,17 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 
 	// get client
 	if kmRequest.First {
+		m.mutex.Lock()
+
+		m.NumRequests++
+		m.Requests[kmRequest.IP] = m.NumRequests
+
 		mc := new(MasterClient)
-		m.Clients[kmRequest.IP] = mc
+		m.Clients[m.Requests[kmRequest.IP]] = mc
+
+		m.mutex.Unlock()
 	}
-	mc := m.Clients[kmRequest.IP]
+	mc := m.Clients[m.Requests[kmRequest.IP]]
 
 	// store new points
 	mc.Config.Dataset = append(mc.Config.Dataset, kmRequest.Dataset...)
@@ -134,6 +147,7 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	}
 
 	// finalize
+	mc.Config.RequestId = m.Requests[kmRequest.IP]
 	mc.Config.K = kmRequest.K
 	if debug {
 		log.Printf("--> received %d points from %s to cluster in %d groups.",
@@ -151,7 +165,10 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	s, err = json.Marshal(&resp)
 	errorHandler(err, 125)
 
-	//TODO: cleanup client
+	// clean up
+	m.mutex.Lock()
+	delete(m.Clients, mc.Config.RequestId)
+	m.mutex.Unlock()
 
 	// return
 	if debug {
@@ -222,7 +239,7 @@ func initMap(conf Configuration, iteration int) [][]byte {
 
 		for j := 0; j < len(conf.Mappers); j++ {
 			cli := conf.Mappers[j]
-			mapArgs := prepareInitMapArgs(j, conf.InputPoints[j][i], conf.CurrentCentroids, first, newPoints, last)
+			mapArgs := prepareInitMapArgs([2]int{conf.RequestId, j}, conf.InputPoints[j][i], conf.CurrentCentroids, first, newPoints, last)
 			channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil)
 		}
 		// wait for ack
@@ -276,7 +293,7 @@ func checkAck(conf Configuration, channels []*rpc.Call, results [][]byte, chunkI
 		// retry if nack
 		for _, id := range idx {
 			cli := conf.Mappers[id]
-			mapArgs := prepareInitMapArgs(id, conf.InputPoints[id][chunkId], conf.CurrentCentroids,
+			mapArgs := prepareInitMapArgs([2]int{conf.RequestId, id}, conf.InputPoints[id][chunkId], conf.CurrentCentroids,
 				first, newPoints, last)
 			channels[id] = cli.Go(mapService1, mapArgs, &results[id], nil)
 		}
@@ -291,7 +308,7 @@ func mapFunc(conf Configuration) [][]byte {
 	channels := make([]*rpc.Call, conf.NumMappers)
 	results := make([][]byte, conf.NumMappers)
 	for j, cli := range conf.Mappers {
-		mapArgs := prepareMapArgs(j, conf.CurrentCentroids)
+		mapArgs := prepareMapArgs([2]int{conf.RequestId, j}, conf.CurrentCentroids)
 		channels[j] = cli.Go(mapService2, mapArgs, &results[j], nil)
 	}
 	// wait for response
@@ -369,7 +386,9 @@ func reduce(conf Configuration, args MapOutput) [][]byte {
 /*------------------------------------------------------ MAIN -------------------------------------------------------*/
 func main() {
 	master := new(MasterServer)
-	master.Clients = make(map[string]*MasterClient)
+	master.Clients = make(map[int]*MasterClient)
+	master.Requests = make(map[string]int)
+	master.NumRequests = 0
 
 	// publish the methods
 	err := rpc.Register(master)
@@ -470,8 +489,7 @@ func kMeanspp(conf *Configuration, dataset utils.Points) {
 	var err error
 
 	// get first random point from dataset
-	conf.CurrentCentroids, err = utils.Init(1, dataset)
-	errorHandler(err, 257)
+	conf.CurrentCentroids = append(conf.CurrentCentroids, dataset[rand.Intn(len(dataset))])
 
 	// populate the initial set of centroids
 	numIter := 0
@@ -602,7 +620,7 @@ func shuffleAndSort(resp [][]byte) MapOutput {
  * Prepares a InitMapInput object for the k-means++ iteration with (eventually) the current centroids and the points
  * for each Mapper.
  */
-func prepareInitMapArgs(mapperId int, chunk utils.Points, centroids utils.Points, first bool, newPoints bool,
+func prepareInitMapArgs(mapperId [2]int, chunk utils.Points, centroids utils.Points, first bool, newPoints bool,
 	last bool) []byte {
 	// Arguments
 	initMapArgs := new(InitMapInput)
@@ -634,7 +652,7 @@ func prepareInitMapArgs(mapperId int, chunk utils.Points, centroids utils.Points
 /*
  * Prepares a InitMapInput object for the k-means iteration with the new centroids for each of the Mappers.
  */
-func prepareMapArgs(mapperId int, centroids utils.Points) []byte {
+func prepareMapArgs(mapperId [2]int, centroids utils.Points) []byte {
 	// arg
 	mapArg := new(MapInput)
 	mapArg.MapperId = mapperId

@@ -40,7 +40,7 @@ const (
 	datapath = "client/data/"
 	//outfile  = "k-means.png"
 	network    = "tcp"
-	address    = "3.73.91.96"
+	address    = "localhost" //"3.73.91.96"
 	masterPort = 11090
 	service    = "MasterServer.KMeans"
 	maxChunk   = 10000
