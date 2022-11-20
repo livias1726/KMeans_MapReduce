@@ -95,8 +95,8 @@ type ReduceOutput struct {
 const (
 	debug              = true
 	networkProtocol    = "tcp"
-	address            = "localhost:11090" //"master:11090"
-	workerAddress      = "localhost:11091" //"worker:11091"
+	address            = "master:11090"
+	workerAddress      = "worker:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
