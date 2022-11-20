@@ -12,8 +12,6 @@ import (
 	"sync"
 )
 
-//TODO: balance the load on the reducers (and ss phase if possible)
-
 type MasterServer struct {
 	NumRequests int
 	Requests    map[string]int
@@ -95,8 +93,8 @@ type ReduceOutput struct {
 const (
 	debug              = true
 	networkProtocol    = "tcp"
-	address            = "localhost:11090" //"master:11090"
-	workerAddress      = "localhost:11091" //"worker:11091"
+	address            = "localhost:11090"
+	workerAddress      = "localhost:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"

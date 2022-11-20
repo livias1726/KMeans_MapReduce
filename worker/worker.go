@@ -64,7 +64,7 @@ type ReduceOutput struct {
 const (
 	debug   = false
 	network = "tcp"
-	address = "localhost:11091" //"worker:11091"
+	address = "localhost:11091"
 )
 
 // InitMap
