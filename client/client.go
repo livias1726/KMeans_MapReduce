@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-echarts/go-echarts/v2/charts"
+	"github.com/go-echarts/go-echarts/v2/opts"
+	"github.com/pa-m/sklearn/preprocessing"
+	"gonum.org/v1/gonum/mat"
 	"io"
 	"log"
 	"math"
@@ -17,28 +21,24 @@ import (
 )
 
 // KMRequest : input to master
-// --> dataset points extracted locally
-// --> number of clusters to create
 type KMRequest struct {
-	IP      string
-	Dataset utils.Points
-	K       int
-	First   bool
-	Last    bool
+	IP      string       // --> IP of the client
+	Dataset utils.Points // --> dataset points extracted locally
+	K       int          // --> number of clusters to create
+	First   bool         // --> first chunk of the request
+	Last    bool         // --> last chunk of the request
 }
 
 // KMResponse : output from master
-// --> clusters obtained
-// --> message from master wrt the termination of the algorithm
 type KMResponse struct {
-	Clusters utils.Clusters
-	Message  string
+	Clusters utils.Clusters // --> clusters obtained
+	Message  string         // --> message from master wrt the termination of the algorithm
 }
 
 const (
-	debug    = true // Set to true to activate debug log
-	datapath = "client/data/"
-	//outfile  = "k-means.png"
+	debug      = false // Set to true to activate debug log
+	scaled     = false // set to true to scale dataset points coordinates
+	datapath   = "client/data/"
 	network    = "tcp"
 	address    = "localhost"
 	masterPort = 11090
@@ -58,7 +58,7 @@ func main() {
 		result KMResponse
 	)
 
-	// check for open TCP ports
+	// connect to the server
 	connect(&cli)
 	defer fileClose(cli)
 
@@ -74,7 +74,6 @@ func main() {
 	*k = 0
 
 	start := time.Now() // take execution time
-	log.Print("Transmitting data...")
 	for i := 0; i < numMessages; i++ {
 		first := i == 0
 		last := i == numMessages-1
@@ -86,6 +85,10 @@ func main() {
 			mArgs = prepareArguments(dataset[counter:dim], k, dim, first, last)
 		}
 
+		if first {
+			fmt.Print("Transmitting data...")
+		}
+		fmt.Print(".")
 		// call the service
 		if debug {
 			log.Printf("--> client %p calling service %s with a %d bytes message (%d)",
@@ -137,7 +140,7 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	kmRequest.IP = getIPAddress()
 
 	// dataset
-	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
+	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints, scaled)
 	errorHandler(err, 102)
 
 	// k
@@ -226,7 +229,6 @@ func scanK(max int) int {
 }
 
 /*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
-//TODO: create output file or receive output file
 func showResults(result KMResponse, elapsed time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)
@@ -235,49 +237,95 @@ func showResults(result KMResponse, elapsed time.Duration) {
 			i, len(result.Clusters[i].Points))
 	}
 	fmt.Printf("\nTime elapsed: %v.\n", elapsed)
-
-	//plotResults(result) TODO: find a way to plot multi-dimensional data
+	plotResults(result.Clusters)
 }
 
-/*
 func plotResults(result utils.Clusters) {
-	var series []chart.Series
+	generateBarChart(result)
+	generateScatterPlot(result)
+}
 
-	for i := 0; i < len(result); i++ {
-		series = append(series, getSeries(result[i]))
+func generateBarChart(result utils.Clusters) {
+	bar := charts.NewBar()
+	// opts
+	bar.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{Title: "Clustering - Bar Chart"}),
+		charts.WithToolboxOpts(opts.Toolbox{
+			Show:  true,
+			Right: "20%",
+			Feature: &opts.ToolBoxFeature{
+				SaveAsImage: &opts.ToolBoxFeatureSaveAsImage{
+					Show:  true,
+					Type:  "png",
+					Title: "k-means_bar",
+				},
+				DataView: &opts.ToolBoxFeatureDataView{
+					Show:  true,
+					Title: "DataView",
+					Lang:  []string{"data view", "turn off", "refresh"},
+				},
+			}},
+		),
+	)
+	// create bars
+	var items []opts.BarData
+	var xAxis []string
+	for i, cluster := range result {
+		xAxis = append(xAxis, strconv.Itoa(i))
+		items = append(items, opts.BarData{Value: len(cluster.Points)})
+	}
+	// draw chart
+	bar.SetXAxis(xAxis).AddSeries("", items).SetSeriesOptions(
+		charts.WithLabelOpts(opts.Label{
+			Show:     true,
+			Position: "top",
+		}),
+	)
+	// save to file
+	f, _ := os.Create("k-means_bar.html")
+	err := bar.Render(f)
+	errorHandler(err, 261)
+}
+
+func generateScatterPlot(result utils.Clusters) {
+	es := charts.NewScatter()
+	es.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{Title: "Clustering - Scatter Plot"}),
+	)
+
+	dim := len(result[0].Points[0].Coordinates)
+	var tot int
+	if dim%2 == 0 {
+		tot = dim
+	} else {
+		tot = dim - 1
 	}
 
-	graph := getChart(series)
+	pca := preprocessing.NewPCA()
+	var dataCentroids []opts.ScatterData
+	var data []opts.ScatterData
+	for i, cluster := range result {
+		xIn := mat.NewDense(dim/2, 2, cluster.Centroid.Coordinates[:tot])
+		pca.FitTransform(xIn, nil)
+		dataCentroids = append(dataCentroids, opts.ScatterData{
+			Name:  strconv.Itoa(i),
+			Value: []interface{}{pca.SingularValues[0], pca.SingularValues[1]},
+		})
+		for _, point := range cluster.Points {
+			xIn := mat.NewDense(dim/2, 2, point.Coordinates[:tot])
+			pca.FitTransform(xIn, nil)
+			data = append(data, opts.ScatterData{
+				Value: []interface{}{pca.SingularValues[0], pca.SingularValues[1]},
+			})
+		}
+		es.AddSeries(strconv.Itoa(i), data)
+	}
 
-	buffer := bytes.NewBuffer([]byte{})
-	err := graph.Render(chart.PNG, buffer)
-	errorHandler(err, 205)
-
-	err = os.WriteFile(outfile, buffer.Bytes(), 0644)
-	errorHandler(err, 208)
+	es.AddSeries("centroids", dataCentroids)
+	f, _ := os.Create("k-means_scatter.html")
+	err := es.Render(io.MultiWriter(f))
+	errorHandler(err, 291)
 }
-
-func getChart(series []chart.Series) chart.Chart {
-	c := new(chart.Chart)
-
-	c.Series = series
-	c.XAxis.Style.Show = true
-	c.YAxis.Style.Show = true
-
-	return *c
-}
-
-func getSeries(cluster utils.Cluster) chart.ContinuousSeries {
-	c := new(chart.ContinuousSeries)
-	c.Style.Show = true
-	c.Style.StrokeWidth = chart.Disabled
-	c.Style.DotWidth = 5
-	c.XValues = cluster.getX()
-	c.YValues = cluster.getY()
-
-	return *c
-}
-*/
 
 /*---------------------------------------------------- UTILS ---------------------------------------------------------*/
 func fileClose(file io.Closer) {

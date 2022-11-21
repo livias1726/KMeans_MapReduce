@@ -73,9 +73,9 @@ type MapInput struct {
 }
 
 type MapOutput struct {
-	ClusterId []int
-	Points    []utils.Points
-	Len       []int
+	Clusters map[int]utils.Points
+	Len      map[int]int
+	Sum      map[int]utils.Point
 }
 
 type ReduceInput struct {
@@ -91,7 +91,7 @@ type ReduceOutput struct {
 }
 
 const (
-	debug              = true
+	debug              = false
 	networkProtocol    = "tcp"
 	address            = "localhost:11090"
 	workerAddress      = "localhost:11091"
@@ -101,8 +101,8 @@ const (
 	reduceService2     = "Worker.Reduce"
 	maxLoad            = 1000 //every worker operates on a maximum of 'maxLoad' points
 	maxNodes           = 10
-	deltaThreshold     = 0.1
-	iterationThreshold = 10
+	deltaThreshold     = 0.01
+	iterationThreshold = 100
 )
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
@@ -322,7 +322,7 @@ func mapFunc(conf Configuration) [][]byte {
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args *MapOutput) [][]byte {
+func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args *[]ReduceInput) [][]byte {
 
 	if service == reduceService1 {
 		return initReduce(conf, *initArgs)
@@ -352,7 +352,7 @@ func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
 	return resp
 }
 
-func reduce(conf Configuration, args MapOutput) [][]byte {
+func reduce(conf Configuration, args []ReduceInput) [][]byte {
 	if debug {
 		log.Print("--> reduce phase started...")
 	}
@@ -364,7 +364,7 @@ func reduce(conf Configuration, args MapOutput) [][]byte {
 	// send a cluster to each reducer
 	for i, cli := range conf.Reducers {
 		// marshalling
-		rArgs := prepareReduceArgs(args.ClusterId[i], args.Points[i], args.Len[i])
+		rArgs := prepareReduceArgs(args[i].ClusterId, args[i].Points, args[i].Len)
 		// call service
 		channels[i] = cli.Go(reduceService2, rArgs, &results[i], nil)
 	}
@@ -531,7 +531,7 @@ func initShuffleAndSort(outs [][]byte) *InitMapOutput {
 }
 
 func kMeans(conf *Configuration) (utils.Clusters, string) {
-	var reduceInput MapOutput
+	var mapOutput [][]byte
 	var msg string
 
 	numIter := 1
@@ -539,11 +539,11 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 		log.Printf("Standard K-Means iteration #%d... ", numIter)
 
 		// map
-		mapOutput := mapFunction(*conf, mapService2, 0)
+		mapOutput = mapFunction(*conf, mapService2, 0)
 		// shuffle and sort
-		reduceInput = shuffleAndSort(mapOutput)
+		reduceInputs := shuffleAndSort(mapOutput)
 		// reduce
-		reduceOutput := reduceFunction(*conf, reduceService2, nil, &reduceInput)
+		reduceOutput := reduceFunction(*conf, reduceService2, nil, &reduceInputs)
 		// check update threshold
 		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids)
 		delta := computeDelta(conf.CurrentCentroids, newCentroids)
@@ -566,21 +566,22 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 	}
 
 	clusters := make(utils.Clusters, conf.K)
+	currClusters := mergeClusters(mapOutput)
 	for i := 0; i < conf.K; i++ {
 		clusters[i].Centroid = conf.CurrentCentroids[i]
-		clusters[i].Points = reduceInput.Points[i]
+		clusters[i].Points = currClusters[i]
 	}
 
 	return clusters, msg
 }
 
 // merges the partial (combined) clusters from every mapper in the actual clusters to pass to the reducers
-func shuffleAndSort(resp [][]byte) MapOutput {
+func shuffleAndSort(resp [][]byte) []ReduceInput {
 	if debug {
 		log.Println("--> shuffle and sort...")
 	}
 
-	pMap := make(map[int]utils.Points)
+	sMap := make(map[int]utils.Points)
 	lMap := make(map[int]int)
 	for _, m := range resp {
 		// unmarshalling
@@ -589,29 +590,32 @@ func shuffleAndSort(resp [][]byte) MapOutput {
 		errorHandler(err, 584)
 
 		// merge
-		for j, cid := range temp.ClusterId {
-			_, ok := pMap[cid]
+		for cid, ps := range temp.Sum {
+			_, ok := lMap[cid]
 			if ok {
-				pMap[cid] = append(pMap[cid], temp.Points[j]...)
-				lMap[cid] += temp.Len[j]
+				lMap[cid] += temp.Len[cid]
+				sMap[cid] = append(sMap[cid], ps)
 			} else {
-				pMap[cid] = temp.Points[j]
-				lMap[cid] = temp.Len[j]
+				lMap[cid] = temp.Len[cid]
+				sMap[cid] = utils.Points{ps}
 			}
 		}
 	}
 
-	mapRes := new(MapOutput)
-	for k, v := range pMap {
-		mapRes.ClusterId = append(mapRes.ClusterId, k)
-		mapRes.Points = append(mapRes.Points, v)
-		mapRes.Len = append(mapRes.Len, lMap[k])
+	redIn := make([]ReduceInput, len(sMap))
+	for cid, sum := range sMap {
+		var ri ReduceInput
+		ri.ClusterId = cid
+		ri.Points = sum
+		ri.Len = lMap[cid]
+
+		redIn[cid] = ri
 	}
 
 	if debug {
 		log.Print("\t\t\t...completed.")
 	}
-	return *mapRes
+	return redIn
 }
 
 /*
@@ -710,6 +714,36 @@ func computeDelta(oldCentroids utils.Points, newCentroids utils.Points) float64 
 	}
 
 	return delta / float64(dim)
+}
+
+// merges the partial clusters from every mapper in the actual clusters to pass to the client
+func mergeClusters(resp [][]byte) map[int]utils.Points {
+	if debug {
+		log.Println("--> final merge...")
+	}
+
+	pMap := make(map[int]utils.Points)
+	for _, m := range resp {
+		// unmarshalling
+		var temp MapOutput
+		err := json.Unmarshal(m, &temp)
+		errorHandler(err, 584)
+
+		// merge
+		for cid, points := range temp.Clusters {
+			_, ok := pMap[cid]
+			if ok {
+				pMap[cid] = append(pMap[cid], points...)
+			} else {
+				pMap[cid] = points
+			}
+		}
+	}
+
+	if debug {
+		log.Print("\t\t\t...completed.")
+	}
+	return pMap
 }
 
 // error handling

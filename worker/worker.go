@@ -44,9 +44,9 @@ type MapInput struct {
 }
 
 type MapOutput struct {
-	ClusterId []int
-	Points    []utils.Points
-	Len       []int
+	Clusters map[int]utils.Points // needed to get the scatter plot
+	Len      map[int]int
+	Sum      map[int]utils.Point
 }
 
 type ReduceInput struct {
@@ -180,12 +180,13 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	mapper.Centroids = inArgs.Centroids
 
 	// classify each given point to a cluster
-	//dim := len(mapper.Centroids)
 	comb := new(Combiner)
-	for _, chunk := range mapper.Chunks {
-		var clusterId []int
-		var length []int
-		var points utils.Points
+	for i, chunk := range mapper.Chunks {
+		var (
+			clusterId []int
+			length    []int
+			points    utils.Points
+		)
 		// map
 		for _, point := range chunk {
 			idx, _ := classify(mapper.Centroids, point)
@@ -195,7 +196,7 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 			length = append(length, 1)
 		}
 		// combine
-		comb.combine(clusterId, points, length)
+		comb.combine(i == 0, clusterId, points, length)
 	}
 
 	// marshalling
@@ -207,34 +208,33 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	return nil
 }
 
-// computes the partial sum of each point in each partial cluster obtained from mapper
-func (c *Combiner) combine(clusterId []int, points utils.Points, length []int) {
-	//combine
+// aggregates the clusters obtained from each chunk by the mapper --> shuffle and sort
+// computes the partial sum of each point in each partial cluster obtained from mapper --> reduce
+func (c *Combiner) combine(first bool, clusterId []int, points utils.Points, length []int) {
+	mapOut := &c.MapOut
+	if first {
+		// allocate space
+		mapOut.Clusters = make(map[int]utils.Points)
+		mapOut.Len = make(map[int]int)
+		mapOut.Sum = make(map[int]utils.Point)
+	}
+
 	for i, cid := range clusterId {
-		isIn, idx := isIn(cid, c.MapOut.ClusterId)
-		if !isIn {
-			c.MapOut.ClusterId = append(c.MapOut.ClusterId, cid)
-			idx = len(c.MapOut.ClusterId) - 1
-
-			newPoints := new(utils.Points)
-			c.MapOut.Points = append(c.MapOut.Points, *newPoints)
-
-			newLength := 0
-			c.MapOut.Len = append(c.MapOut.Len, newLength)
-		}
-
-		c.MapOut.Points[idx] = append(c.MapOut.Points[idx], points[i])
-		c.MapOut.Len[idx] += length[i]
-	}
-}
-
-func isIn(cid int, id []int) (bool, int) {
-	for idx, i := range id {
-		if cid == i {
-			return true, idx
+		_, ok := mapOut.Clusters[cid]
+		if ok {
+			// aggregate
+			mapOut.Clusters[cid] = append(mapOut.Clusters[cid], points[i])
+			mapOut.Len[cid] += length[i]
+			// recenter
+			mapOut.Sum[cid] = recenter(utils.Points{points[i], mapOut.Sum[cid]}, len(points[i].Coordinates))
+		} else {
+			// aggregate
+			mapOut.Clusters[cid] = utils.Points{points[i]}
+			mapOut.Len[cid] = length[i]
+			// recenter
+			mapOut.Sum[cid] = points[i]
 		}
 	}
-	return false, -1
 }
 
 // Reduce -> recenter /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
