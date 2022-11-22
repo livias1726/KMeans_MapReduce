@@ -437,10 +437,11 @@ func getChunks(dataset utils.Points) ([][]utils.Points, int) {
 	// populate chunks
 	var j int
 	count := 0
+	p1 := 0
 	for i := 0; i < numMappers; i++ {
-		p1 := ((1 + i) * numPoints) / numMappers
-		p2 := (i * numPoints) / numMappers
-		points := p1 - p2
+		p2 := ((1 + i) * numPoints) / numMappers
+		points := p2 - p1
+		p1 = p2
 
 		numChunks := int(math.Ceil(float64(points) / float64(maxLoad)))
 		inputPoints[i] = make([]utils.Points, numChunks)
