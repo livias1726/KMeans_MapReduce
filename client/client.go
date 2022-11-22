@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/AvraamMavridis/randomcolor"
+	"github.com/go-echarts/go-echarts/v2/charts"
+	"github.com/go-echarts/go-echarts/v2/opts"
 	"io"
 	"log"
 	"math"
@@ -36,9 +39,9 @@ type KMResponse struct {
 }
 
 const (
-	debug    = true // Set to true to activate debug log
-	datapath = "./data/"
-	//outfile  = "k-means.png"
+	debug      = false // Set to true to activate debug log
+	scaled     = false // set to true to scale dataset points coordinates
+	datapath   = "./data/"
 	network    = "tcp"
 	address    = "3.73.91.96"
 	masterPort = 11090
@@ -74,7 +77,6 @@ func main() {
 	*k = 0
 
 	start := time.Now() // take execution time
-	log.Print("Transmitting data...")
 	for i := 0; i < numMessages; i++ {
 		first := i == 0
 		last := i == numMessages-1
@@ -86,6 +88,10 @@ func main() {
 			mArgs = prepareArguments(dataset[counter:dim], k, dim, first, last)
 		}
 
+		if first {
+			fmt.Print("Transmitting data...")
+		}
+		fmt.Print(".")
 		// call the service
 		if debug {
 			log.Printf("--> client %p calling service %s with a %d bytes message (%d)",
@@ -137,7 +143,7 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	kmRequest.IP = getIPAddress()
 
 	// dataset
-	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
+	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints, scaled)
 	errorHandler(err, 102)
 
 	// k
@@ -226,7 +232,6 @@ func scanK(max int) int {
 }
 
 /*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
-//TODO: create output file or receive output file
 func showResults(result KMResponse, elapsed time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)
@@ -235,49 +240,141 @@ func showResults(result KMResponse, elapsed time.Duration) {
 			i, len(result.Clusters[i].Points))
 	}
 	fmt.Printf("\nTime elapsed: %v.\n", elapsed)
-
-	//plotResults(result) TODO: find a way to plot multi-dimensional data
+	plotResults(result.Clusters)
 }
 
-/*
 func plotResults(result utils.Clusters) {
-	var series []chart.Series
+	generateBarChart(result)
+	generateScatterPlot(result)
+}
 
-	for i := 0; i < len(result); i++ {
-		series = append(series, getSeries(result[i]))
+func generateScatterPlot(result utils.Clusters) {
+	es := charts.NewScatter3D()
+	es.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{Title: "Clustering - Scatter Plot"}),
+		charts.WithLegendOpts(
+			opts.Legend{
+				Show: true,
+				Top:  "10%",
+			},
+		),
+		charts.WithToolboxOpts(opts.Toolbox{
+			Show: true,
+			Feature: &opts.ToolBoxFeature{
+				SaveAsImage: &opts.ToolBoxFeatureSaveAsImage{
+					Show:  true,
+					Type:  "png",
+					Title: "k-means_scatter",
+				},
+			},
+		}),
+	)
+
+	var dataCentroids []opts.Chart3DData
+	color := ""
+	for i, cluster := range result {
+		resC := reshape(cluster.Centroid.Coordinates, 3)
+		dataCentroids = append(dataCentroids, opts.Chart3DData{Value: []interface{}{resC[0], resC[1], resC[2]}})
+
+		data := make([]opts.Chart3DData, 0)
+		for _, point := range cluster.Points {
+			resP := reshape(point.Coordinates, 3)
+			data = append(data, opts.Chart3DData{Value: []interface{}{resP[0], resP[1], resP[2]}})
+		}
+
+		name := fmt.Sprintf("Cluster %d", i)
+		color = getNewColor(color)
+		es.AddSeries(name, data, charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
 	}
 
-	graph := getChart(series)
+	es.AddSeries("Centroids", dataCentroids, charts.WithItemStyleOpts(opts.ItemStyle{Color: "black"}))
 
-	buffer := bytes.NewBuffer([]byte{})
-	err := graph.Render(chart.PNG, buffer)
-	errorHandler(err, 205)
-
-	err = os.WriteFile(outfile, buffer.Bytes(), 0644)
-	errorHandler(err, 208)
+	f, _ := os.Create("k-means_scatter.html")
+	err := es.Render(io.MultiWriter(f))
+	errorHandler(err, 291)
 }
 
-func getChart(series []chart.Series) chart.Chart {
-	c := new(chart.Chart)
+func getNewColor(color string) string {
+	var res string
 
-	c.Series = series
-	c.XAxis.Style.Show = true
-	c.YAxis.Style.Show = true
+	if color == "" {
+		res = randomcolor.GetRandomColorInHex()
+	} else {
+		ok := false
+		for !ok {
+			res = randomcolor.GetRandomColorInHex()
+			if color != res {
+				ok = true
+			}
+		}
+	}
 
-	return *c
+	return res
 }
 
-func getSeries(cluster utils.Cluster) chart.ContinuousSeries {
-	c := new(chart.ContinuousSeries)
-	c.Style.Show = true
-	c.Style.StrokeWidth = chart.Disabled
-	c.Style.DotWidth = 5
-	c.XValues = cluster.getX()
-	c.YValues = cluster.getY()
+func reshape(tensor []float64, dim int) []float64 {
+	tensorDim := len(tensor)
+	var split int
+	res := make([]float64, dim)
+	count := 0
+	p1 := 0
+	for i := 0; i < dim; i++ {
+		p2 := ((1 + i) * tensorDim) / dim
+		split = p2 - p1
+		p1 = p2
 
-	return *c
+		res[i] = 0.0
+		for j := 0; j < split; j++ {
+			res[i] += tensor[count+j]
+		}
+		count += split
+		res[i] = res[i] / float64(split)
+	}
+
+	return res
 }
-*/
+
+func generateBarChart(result utils.Clusters) {
+	bar := charts.NewBar()
+	// opts
+	bar.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{Title: "Clustering - Bar Chart"}),
+		charts.WithToolboxOpts(opts.Toolbox{
+			Show:  true,
+			Right: "20%",
+			Feature: &opts.ToolBoxFeature{
+				SaveAsImage: &opts.ToolBoxFeatureSaveAsImage{
+					Show:  true,
+					Type:  "png",
+					Title: "k-means_bar",
+				},
+				DataView: &opts.ToolBoxFeatureDataView{
+					Show:  true,
+					Title: "DataView",
+					Lang:  []string{"data view", "turn off", "refresh"},
+				},
+			}},
+		),
+	)
+	// create bars
+	var items []opts.BarData
+	var xAxis []string
+	for i, cluster := range result {
+		xAxis = append(xAxis, strconv.Itoa(i))
+		items = append(items, opts.BarData{Value: len(cluster.Points)})
+	}
+	// draw chart
+	bar.SetXAxis(xAxis).AddSeries("", items).SetSeriesOptions(
+		charts.WithLabelOpts(opts.Label{
+			Show:     true,
+			Position: "top",
+		}),
+	)
+	// save to file
+	f, _ := os.Create("k-means_bar.html")
+	err := bar.Render(f)
+	errorHandler(err, 261)
+}
 
 /*---------------------------------------------------- UTILS ---------------------------------------------------------*/
 func fileClose(file io.Closer) {
