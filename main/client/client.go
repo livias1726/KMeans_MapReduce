@@ -21,7 +21,7 @@ const (
 	debug      = false // Set to true to activate debug log
 	datapath   = "main/client/data/"
 	network    = "tcp"
-	address    = "localhost"
+	address    = "18.157.84.130"
 	masterPort = 11090
 	service    = "MasterServer.KMeans"
 	maxChunk   = 10000
