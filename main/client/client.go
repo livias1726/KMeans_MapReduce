@@ -19,7 +19,6 @@ import (
 
 const (
 	debug      = false // Set to true to activate debug log
-	scaled     = false // set to true to scale dataset points coordinates
 	datapath   = "main/client/data/"
 	network    = "tcp"
 	address    = "localhost"
@@ -122,7 +121,7 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	kmRequest.IP = getIPAddress()
 
 	// dataset
-	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints, scaled)
+	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
 	errorHandler(err, 102)
 
 	// k
