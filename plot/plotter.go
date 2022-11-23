@@ -33,6 +33,28 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 				},
 			},
 		}),
+		charts.WithDataZoomOpts(
+			opts.DataZoom{
+				Type:       "slider",
+				XAxisIndex: 0,
+			},
+			opts.DataZoom{
+				Type:       "slider",
+				YAxisIndex: 0,
+			},
+			opts.DataZoom{
+				Type:       "inside",
+				XAxisIndex: 0,
+			},
+			opts.DataZoom{
+				Type:       "inside",
+				YAxisIndex: 0,
+			},
+		),
+		charts.WithTooltipOpts(opts.Tooltip{
+			Show:      true,
+			Formatter: "{a}: {b}",
+		}),
 	)
 
 	var dataCentroids []opts.ScatterData
@@ -52,11 +74,7 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 
 		name := fmt.Sprintf("Cluster %d", i)
 		color = getNewColor(color)
-		es.AddSeries(name, data, charts.WithLabelOpts(opts.Label{
-			Show:      true,
-			Position:  "right",
-			Formatter: "{b}",
-		}), charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
+		es.AddSeries(name, data, charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
 	}
 
 	es.AddSeries("Centroids", dataCentroids, charts.WithItemStyleOpts(opts.ItemStyle{Color: "black"}))
@@ -172,8 +190,8 @@ func (p *Plotter) GenerateBarChart(result utils.Clusters) error {
 				},
 				DataView: &opts.ToolBoxFeatureDataView{
 					Show:  true,
-					Title: "DataView",
-					Lang:  []string{"data view", "turn off", "refresh"},
+					Title: "Data",
+					Lang:  []string{"View", "Close", "Refresh"},
 				},
 			}},
 		),
@@ -183,7 +201,10 @@ func (p *Plotter) GenerateBarChart(result utils.Clusters) error {
 	var xAxis []string
 	for i, cluster := range result {
 		xAxis = append(xAxis, strconv.Itoa(i))
-		items = append(items, opts.BarData{Value: len(cluster.Points)})
+		items = append(items, opts.BarData{
+			Name:  strconv.Itoa(i),
+			Value: len(cluster.Points),
+		})
 	}
 	// draw chart
 	bar.SetXAxis(xAxis).AddSeries("", items).SetSeriesOptions(

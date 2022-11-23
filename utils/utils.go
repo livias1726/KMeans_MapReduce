@@ -33,6 +33,7 @@ func ExtractPoints(dataset [][]string) (Points, error) {
 		}
 
 		var p Point
+		p.Id = i
 		p.Coordinates = coords
 		points = append(points, p)
 	}
