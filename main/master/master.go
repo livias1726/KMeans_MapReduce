@@ -38,63 +38,11 @@ type Configuration struct {
 	IterationThreshold int              // stop condition on number of iteration
 }
 
-// KMRequest : matches with struct on client side
-type KMRequest struct {
-	IP      string
-	Dataset utils.Points
-	K       int
-	First   bool
-	Last    bool
-}
-
-// KMResponse : matches with struct on client side
-type KMResponse struct {
-	Clusters utils.Clusters
-	Message  string
-}
-
-type InitMapInput struct {
-	MapperId  [2]int
-	First     bool
-	Centroids utils.Points
-	NewPoints bool
-	Chunk     utils.Points
-	Last      bool
-}
-
-type InitMapOutput struct {
-	Points    utils.Points
-	Distances []float64
-}
-
-type MapInput struct {
-	MapperId  [2]int
-	Centroids utils.Points
-}
-
-type MapOutput struct {
-	Clusters map[int]utils.Points
-	Len      map[int]int
-	Sum      map[int]utils.Point
-}
-
-type ReduceInput struct {
-	ClusterId int
-	Points    utils.Points
-	Len       int
-}
-
-type ReduceOutput struct {
-	ClusterId int
-	Point     utils.Point
-	Len       int
-}
-
 const (
 	debug              = false
 	networkProtocol    = "tcp"
-	address            = "master:11090"
-	workerAddress      = "worker:11091"
+	address            = "localhost:11090"
+	workerAddress      = "localhost:11091"
 	mapService1        = "Worker.InitMap"
 	reduceService1     = "Worker.InitReduce"
 	mapService2        = "Worker.Map"
@@ -108,10 +56,10 @@ const (
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
 func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	var (
-		kmRequest KMRequest
+		kmRequest utils.KMRequest
 		err       error
 		s         []byte
-		resp      KMResponse
+		resp      utils.KMResponse
 	)
 
 	// unmarshalling
@@ -322,7 +270,7 @@ func mapFunc(conf Configuration) [][]byte {
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
-func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput, args *[]ReduceInput) [][]byte {
+func reduceFunction(conf Configuration, service string, initArgs *utils.InitMapOutput, args *[]utils.ReduceInput) [][]byte {
 
 	if service == reduceService1 {
 		return initReduce(conf, *initArgs)
@@ -331,7 +279,7 @@ func reduceFunction(conf Configuration, service string, initArgs *InitMapOutput,
 	return reduce(conf, *args)
 }
 
-func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
+func initReduce(conf Configuration, arg utils.InitMapOutput) [][]byte {
 	if debug {
 		log.Print("--> init-reduce phase started...")
 	}
@@ -352,7 +300,7 @@ func initReduce(conf Configuration, arg InitMapOutput) [][]byte {
 	return resp
 }
 
-func reduce(conf Configuration, args []ReduceInput) [][]byte {
+func reduce(conf Configuration, args []utils.ReduceInput) [][]byte {
 	if debug {
 		log.Print("--> reduce phase started...")
 	}
@@ -516,16 +464,16 @@ func kMeanspp(conf *Configuration, dataset utils.Points) {
 }
 
 // merges the nearest points (combined) wrt the centroids obtained from each mapper
-func initShuffleAndSort(outs [][]byte) *InitMapOutput {
-	initMapOut := new(InitMapOutput)
+func initShuffleAndSort(outs [][]byte) *utils.InitMapOutput {
+	initMapOut := new(utils.InitMapOutput)
 
-	var tempMapOut InitMapOutput
+	var tempMapOut utils.InitMapOutput
 	for _, out := range outs {
 		err := json.Unmarshal(out, &tempMapOut)
 		errorHandler(err, 306)
 		// merge
 		initMapOut.Points = append(initMapOut.Points, tempMapOut.Points...)
-		initMapOut.Distances = append(initMapOut.Distances, tempMapOut.Distances...)
+		initMapOut.MinDistances = append(initMapOut.MinDistances, tempMapOut.MinDistances...)
 	}
 
 	return initMapOut
@@ -577,7 +525,7 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 }
 
 // merges the partial (combined) clusters from every mapper in the actual clusters to pass to the reducers
-func shuffleAndSort(resp [][]byte) []ReduceInput {
+func shuffleAndSort(resp [][]byte) []utils.ReduceInput {
 	if debug {
 		log.Println("--> shuffle and sort...")
 	}
@@ -586,7 +534,7 @@ func shuffleAndSort(resp [][]byte) []ReduceInput {
 	lMap := make(map[int]int)
 	for _, m := range resp {
 		// unmarshalling
-		var temp MapOutput
+		var temp utils.MapOutput
 		err := json.Unmarshal(m, &temp)
 		errorHandler(err, 584)
 
@@ -603,9 +551,9 @@ func shuffleAndSort(resp [][]byte) []ReduceInput {
 		}
 	}
 
-	redIn := make([]ReduceInput, len(sMap))
+	redIn := make([]utils.ReduceInput, len(sMap))
 	for cid, sum := range sMap {
-		var ri ReduceInput
+		var ri utils.ReduceInput
 		ri.ClusterId = cid
 		ri.Points = sum
 		ri.Len = lMap[cid]
@@ -626,7 +574,7 @@ func shuffleAndSort(resp [][]byte) []ReduceInput {
 func prepareInitMapArgs(mapperId [2]int, chunk utils.Points, centroids utils.Points, first bool, newPoints bool,
 	last bool) []byte {
 	// Arguments
-	initMapArgs := new(InitMapInput)
+	initMapArgs := new(utils.InitMapInput)
 	initMapArgs.MapperId = mapperId
 
 	if !newPoints { // if not first iteration of map -> points already transmitted
@@ -657,7 +605,7 @@ func prepareInitMapArgs(mapperId [2]int, chunk utils.Points, centroids utils.Poi
  */
 func prepareMapArgs(mapperId [2]int, centroids utils.Points) []byte {
 	// arg
-	mapArg := new(MapInput)
+	mapArg := new(utils.MapInput)
 	mapArg.MapperId = mapperId
 	mapArg.Centroids = centroids
 
@@ -670,7 +618,7 @@ func prepareMapArgs(mapperId [2]int, centroids utils.Points) []byte {
 
 func prepareReduceArgs(clusterId int, points utils.Points, length int) []byte {
 	// arg
-	redArg := new(ReduceInput)
+	redArg := new(utils.ReduceInput)
 	redArg.ClusterId = clusterId
 	redArg.Points = points
 	redArg.Len = length
@@ -686,7 +634,7 @@ func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points 
 	newCentroids := make(utils.Points, len(oldCentroids))
 	copy(newCentroids, oldCentroids)
 
-	var out ReduceOutput
+	var out utils.ReduceOutput
 	for _, r := range resp {
 		// unmarshalling
 		err := json.Unmarshal(r, &out)
@@ -726,7 +674,7 @@ func mergeClusters(resp [][]byte) map[int]utils.Points {
 	pMap := make(map[int]utils.Points)
 	for _, m := range resp {
 		// unmarshalling
-		var temp MapOutput
+		var temp utils.MapOutput
 		err := json.Unmarshal(m, &temp)
 		errorHandler(err, 584)
 

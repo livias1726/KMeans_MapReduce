@@ -1,8 +1,6 @@
 package utils
 
 import (
-	"github.com/pa-m/sklearn/preprocessing"
-	"gonum.org/v1/gonum/mat"
 	"math"
 	"strconv"
 )
@@ -20,15 +18,7 @@ type Cluster struct {
 }
 type Clusters []Cluster
 
-func ExtractPoints(dataset [][]string, scaled bool) (Points, error) {
-	if scaled {
-		return ExtractPointsS(dataset)
-	}
-
-	return ExtractPointsNS(dataset)
-}
-
-func ExtractPointsNS(dataset [][]string) (Points, error) {
+func ExtractPoints(dataset [][]string) (Points, error) {
 	var points Points
 
 	for i := 0; i < len(dataset); i++ {
@@ -48,46 +38,6 @@ func ExtractPointsNS(dataset [][]string) (Points, error) {
 	}
 
 	return points, nil
-}
-
-func ExtractPointsS(dataset [][]string) (Points, error) {
-	var points Points
-
-	scaled, err := scaleCoordinates(dataset, len(dataset), len(dataset[0]))
-	if err != nil {
-		return points, err
-	}
-
-	nRows, _ := scaled.Dims()
-	for i := 0; i < nRows; i++ {
-		coords := scaled.RawRowView(i)
-
-		var p Point
-		p.Id = i
-		p.Coordinates = coords
-		points = append(points, p)
-	}
-
-	return points, nil
-}
-
-func scaleCoordinates(dataset [][]string, nRows int, nCols int) (*mat.Dense, error) {
-	scaler := preprocessing.NewStandardScaler()
-	xIn := make([]float64, 0)
-	for _, row := range dataset {
-		for _, col := range row {
-			f, err := strconv.ParseFloat(col, 64)
-			if err != nil {
-				return nil, err
-			}
-			xIn = append(xIn, f)
-		}
-	}
-
-	matIn := mat.NewDense(nRows, nCols, xIn)
-	matOut, _ := scaler.FitTransform(matIn, nil)
-
-	return matOut, nil
 }
 
 // GetDistance returns the euclidean distance between two points
