@@ -1,3 +1,3 @@
-docker build -t kmeans_mr .
+docker build -t km_mr .
 docker-compose up
 

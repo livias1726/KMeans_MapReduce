@@ -1,12 +1,16 @@
 services:
   master:
-    image: kmeans_mr:latest
+    build:
+      dockerfile: DockerMaster
+    image: km_mr:latest
     command: sh -c "/mapreduce/start_master.sh"
     ports:
       - 11090:11090
     
   worker:
-    image: kmeans_mr:latest
+    build:
+      dockerfile: DockerWorker
+    image: km_mr:latest
     command: sh -c "/mapreduce/start_worker.sh"
     ports:
       - 11091
