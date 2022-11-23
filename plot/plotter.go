@@ -52,11 +52,12 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 
 		name := fmt.Sprintf("Cluster %d", i)
 		color = getNewColor(color)
-		es.AddSeries(name, data, charts.WithLabelOpts(opts.Label{
-			Show:      true,
-			Position:  "right",
-			Formatter: "{b}",
-		}), charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
+		es.AddSeries(name, data, /*charts.WithLabelOpts(opts.Label{
+				Show:      true,
+				Position:  "right",
+				Formatter: "{b}",
+			}), */
+			charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
 	}
 
 	es.AddSeries("Centroids", dataCentroids, charts.WithItemStyleOpts(opts.ItemStyle{Color: "black"}))

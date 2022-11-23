@@ -1,1 +1,2 @@
-# SDCC_Proj
+# KMeans - MapReduce
+## Local client for remote connection
