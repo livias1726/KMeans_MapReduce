@@ -1,16 +1,16 @@
 services:
   master:
-    build:
-      dockerfile: DockerMaster
-    image: km_mr:latest
-    command: sh -c "/mapreduce/start_master.sh"
+    image: km_mr:master
+    command: sh -c "master/start_master.sh"
     ports:
       - 11090:11090
+    volumes:
+      - ./utils/:/mapreduce/utils
     
   worker:
-    build:
-      dockerfile: DockerWorker
-    image: km_mr:latest
-    command: sh -c "/mapreduce/start_worker.sh"
+    image: km_mr:worker
+    command: sh -c "worker/start_worker.sh"
     ports:
       - 11091
+    volumes:
+      - ./utils/:/mapreduce/utils

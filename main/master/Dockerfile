@@ -5,7 +5,7 @@ FROM golang:latest
 WORKDIR /mapreduce
 
 # Copy the source from the current directory to the Working Directory inside the container
-COPY main/worker/ utils/ ./
+COPY . ./master
 
 # Dependencies
 RUN go install; exit 0
