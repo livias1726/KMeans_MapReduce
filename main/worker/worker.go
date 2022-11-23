@@ -20,45 +20,8 @@ type Worker struct {
 }
 
 type Combiner struct {
-	InitMapOut InitMapOutput
-	MapOut     MapOutput
-}
-
-type InitMapInput struct {
-	MapperId  [2]int
-	First     bool
-	Centroids utils.Points
-	NewPoints bool
-	Chunk     utils.Points
-	Last      bool
-}
-
-type InitMapOutput struct {
-	Points       utils.Points
-	MinDistances []float64
-}
-
-type MapInput struct {
-	MapperId  [2]int
-	Centroids utils.Points
-}
-
-type MapOutput struct {
-	Clusters map[int]utils.Points // needed to get the scatter plot
-	Len      map[int]int
-	Sum      map[int]utils.Point
-}
-
-type ReduceInput struct {
-	ClusterId int
-	Points    utils.Points
-	Len       int
-}
-
-type ReduceOutput struct {
-	ClusterId int
-	Point     utils.Point
-	Len       int
+	InitMapOut utils.InitMapOutput
+	MapOut     utils.MapOutput
 }
 
 const (
@@ -72,7 +35,7 @@ const (
 // --> output: chunk of points processed and their minimum distance from the set of centroids
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	// unmarshalling
-	var inArgs InitMapInput
+	var inArgs utils.InitMapInput
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
 
@@ -127,7 +90,7 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 }
 
 // Performs a combine phase for a local map output before giving the result to the master
-func (c *Combiner) initCombine(inArgs InitMapOutput) {
+func (c *Combiner) initCombine(inArgs utils.InitMapOutput) {
 	combRes, dist := getFartherPoint(inArgs)
 
 	c.InitMapOut.Points = append(c.InitMapOut.Points, combRes)
@@ -138,7 +101,7 @@ func (c *Combiner) initCombine(inArgs InitMapOutput) {
 // --> input : set of points and their minimum distance from the current set of centroids
 // --> output: new centroid
 func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
-	var inArgs InitMapOutput
+	var inArgs utils.InitMapOutput
 	var redRes utils.Point
 
 	// unmarshalling
@@ -167,7 +130,7 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 
 // Map -> classify /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
 func (w *Worker) Map(payload []byte, result *[]byte) error {
-	var inArgs MapInput
+	var inArgs utils.MapInput
 
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
@@ -239,7 +202,7 @@ func (c *Combiner) combine(first bool, clusterId []int, points utils.Points, len
 
 // Reduce -> recenter /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
 func (w *Worker) Reduce(payload []byte, result *[]byte) error {
-	var inArgs ReduceInput
+	var inArgs utils.ReduceInput
 
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
@@ -248,7 +211,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 		log.Printf("REDUCER [%d]: received %d points to recenter.", inArgs.ClusterId, len(inArgs.Points))
 	}
 
-	var redRes ReduceOutput
+	var redRes utils.ReduceOutput
 	redRes.ClusterId = inArgs.ClusterId
 	redRes.Point = recenter(inArgs.Points, len(inArgs.Points[0].Coordinates))
 	redRes.Len = inArgs.Len
@@ -285,8 +248,8 @@ func main() {
 
 /*------------------------------------------------------ LOCAL FUNCTIONS ---------------------------------------------*/
 // compute the minimum distance between each point and the set of centroids
-func computeMinDistances(points utils.Points, centroids utils.Points) InitMapOutput {
-	var mapOut InitMapOutput
+func computeMinDistances(points utils.Points, centroids utils.Points) utils.InitMapOutput {
+	var mapOut utils.InitMapOutput
 	mapOut.Points = make(utils.Points, len(points))
 	mapOut.MinDistances = make([]float64, len(points))
 
@@ -302,7 +265,7 @@ func computeMinDistances(points utils.Points, centroids utils.Points) InitMapOut
 }
 
 // return the farther point wrt the centroids
-func getFartherPoint(inArgs InitMapOutput) (utils.Point, float64) {
+func getFartherPoint(inArgs utils.InitMapOutput) (utils.Point, float64) {
 
 	var maxDist float64
 	var index int

@@ -1,5 +1,6 @@
 .idea/
-client/data
+main/client/data
 
+*.html
 go.mod
 go.sum
