@@ -85,55 +85,6 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 	return err
 }
 
-/*
-func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
-	es := charts.NewScatter3D()
-	es.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{Title: "Clustering - Scatter Plot"}),
-		charts.WithLegendOpts(
-			opts.Legend{
-				Show: true,
-				Top:  "10%",
-			},
-		),
-		charts.WithToolboxOpts(opts.Toolbox{
-			Show: true,
-			Feature: &opts.ToolBoxFeature{
-				SaveAsImage: &opts.ToolBoxFeatureSaveAsImage{
-					Show:  true,
-					Type:  "png",
-					Title: "k-means_scatter",
-				},
-			},
-		}),
-	)
-
-	var dataCentroids []opts.Chart3DData
-	color := ""
-	for i, cluster := range result {
-		resC := reshape(cluster.Centroid.Coordinates, 3)
-		dataCentroids = append(dataCentroids, opts.Chart3DData{Value: []interface{}{resC[0], resC[1], resC[2]}})
-
-		data := make([]opts.Chart3DData, 0)
-		for _, point := range cluster.Points {
-			resP := reshape(point.Coordinates, 3)
-			data = append(data, opts.Chart3DData{Value: []interface{}{resP[0], resP[1], resP[2]}})
-		}
-
-		name := fmt.Sprintf("Cluster %d", i)
-		color = getNewColor(color)
-		es.AddSeries(name, data, charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
-	}
-
-	es.AddSeries("Centroids", dataCentroids, charts.WithItemStyleOpts(opts.ItemStyle{Color: "black"}))
-
-	f, _ := os.Create("k-means_scatter.html")
-	err := es.Render(io.MultiWriter(f))
-
-	return err
-}
-*/
-
 func getNewColor(color string) string {
 	var res string
 
@@ -200,14 +151,15 @@ func (p *Plotter) GenerateBarChart(result utils.Clusters) error {
 	var items []opts.BarData
 	var xAxis []string
 	for i, cluster := range result {
-		xAxis = append(xAxis, strconv.Itoa(i))
+		name := fmt.Sprintf("Cluster %d", i)
+		xAxis = append(xAxis, name)
 		items = append(items, opts.BarData{
-			Name:  strconv.Itoa(i),
+			Name:  name,
 			Value: len(cluster.Points),
 		})
 	}
 	// draw chart
-	bar.SetXAxis(xAxis).AddSeries("", items).SetSeriesOptions(
+	bar.SetXAxis(xAxis).AddSeries("	Points", items).SetSeriesOptions(
 		charts.WithLabelOpts(opts.Label{
 			Show:     true,
 			Position: "top",
