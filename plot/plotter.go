@@ -13,8 +13,9 @@ import (
 
 type Plotter int
 
-func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
+func (p *Plotter) GenerateScatterPlot(result utils.Clusters, path string) error {
 	es := charts.NewScatter()
+	// global options of the scatter
 	es.SetGlobalOptions(
 		charts.WithTitleOpts(opts.Title{Title: "Clustering - Scatter Plot"}),
 		charts.WithLegendOpts(
@@ -56,14 +57,15 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 			Formatter: "{a}: {b}",
 		}),
 	)
-
+	// populate the scatter
 	var dataCentroids []opts.ScatterData
 	color := ""
 	for i, cluster := range result {
+		// centroid
 		resC := reshape(cluster.Centroid.Coordinates, 2)
 		dataCentroids = append(dataCentroids, opts.ScatterData{Value: resC})
-
-		data := make([]opts.ScatterData, 0)
+		// data inside the cluster
+		var data []opts.ScatterData
 		for _, point := range cluster.Points {
 			resP := reshape(point.Coordinates, 2)
 			data = append(data, opts.ScatterData{
@@ -71,20 +73,22 @@ func (p *Plotter) GenerateScatterPlot(result utils.Clusters) error {
 				Value: resP},
 			)
 		}
-
 		name := fmt.Sprintf("Cluster %d", i)
 		color = getNewColor(color)
 		es.AddSeries(name, data, charts.WithItemStyleOpts(opts.ItemStyle{Color: color}))
 	}
-
 	es.AddSeries("Centroids", dataCentroids, charts.WithItemStyleOpts(opts.ItemStyle{Color: "black"}))
-
-	f, _ := os.Create("k-means_scatter.html")
+	// save plot
+	f, _ := os.Create(path + "k-means_scatter.html")
 	err := es.Render(io.MultiWriter(f))
 
 	return err
 }
 
+/*
+ * used to get different colors
+ * 'randomcolor' does not guarantee that every time 'GetRandomColorInHex()' is called a new color is selected
+ */
 func getNewColor(color string) string {
 	var res string
 
@@ -103,29 +107,36 @@ func getNewColor(color string) string {
 	return res
 }
 
+/*
+ * reshapes the point coordinates to the correct number of dimensions
+ * to draw a 2D scatter plot it is necessary to reduce points dimensions to 2 - this means a loss of info
+ */
 func reshape(tensor []float64, dim int) []float64 {
 	tensorDim := len(tensor)
 	var split int
+
 	res := make([]float64, dim)
 	count := 0
 	p1 := 0
 	for i := 0; i < dim; i++ {
+		// separate equally the points into 'dim' parts
 		p2 := ((1 + i) * tensorDim) / dim
 		split = p2 - p1
 		p1 = p2
-
+		// populate coordinate
 		res[i] = 0.0
 		for j := 0; j < split; j++ {
 			res[i] += tensor[count+j]
 		}
-		count += split
 		res[i] = res[i] / float64(split)
+
+		count += split
 	}
 
 	return res
 }
 
-func (p *Plotter) GenerateBarChart(result utils.Clusters) error {
+func (p *Plotter) GenerateBarChart(result utils.Clusters, path string) error {
 	bar := charts.NewBar()
 	// opts
 	bar.SetGlobalOptions(
@@ -166,7 +177,7 @@ func (p *Plotter) GenerateBarChart(result utils.Clusters) error {
 		}),
 	)
 	// save to file
-	f, _ := os.Create("k-means_bar.html")
+	f, _ := os.Create(path + "k-means_bar.html")
 	err := bar.Render(f)
 
 	return err
