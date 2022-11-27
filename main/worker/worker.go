@@ -38,9 +38,6 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	var inArgs utils.InitMapInput
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, "init-map unmarshalling")
-	if debug {
-		log.Printf("--> mapper received chunk [%d...] and %d centroids", inArgs.Chunk[0].Id, len(inArgs.Centroids))
-	}
 	// select mapper
 	idx := inArgs.MapperId
 	if w.Mappers[idx[0]] == nil {
@@ -213,6 +210,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
+	worker.Mappers = make(map[int]map[int]*Mapper)
 	// publish the methods
 	err := rpc.Register(worker)
 	errorHandler(err, "service register")

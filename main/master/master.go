@@ -96,10 +96,8 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 	// finalize
 	mc.Config.RequestId = m.Requests[kmRequest.IP]
 	mc.Config.K = kmRequest.K
-	if debug {
-		log.Printf("--> received %d points from %s to cluster in %d groups.",
-			len(mc.Config.Dataset), kmRequest.IP, mc.Config.K)
-	}
+	log.Printf("Received %d points from %s to cluster in %d groups.", len(mc.Config.Dataset), kmRequest.IP,
+		mc.Config.K)
 	// call the service
 	result, msg := mc.KMeans()
 	// preparing response
@@ -250,7 +248,13 @@ func initMapFunction(reqId int, chunksPerMapper int, numMappers int, mappers []*
 		last := i == chunksPerMapper-1
 		if i == 0 { // send centroids only in the first iteration
 			for j, cli := range mappers {
-				mapArgs := prepareInitMapArgs([2]int{reqId, j}, chunks[j][i], centroids, last)
+				var chunk utils.Points
+				if chunks != nil {
+					chunk = chunks[j][i]
+				} else {
+					chunk = nil
+				}
+				mapArgs := prepareInitMapArgs([2]int{reqId, j}, chunk, centroids, last)
 				channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil) // call j-th mapper
 			}
 		} else {
@@ -348,6 +352,9 @@ func initShuffleAndSort(outs [][]byte) utils.InitMapOutput {
 		initMapOut utils.InitMapOutput
 		tempMapOut utils.InitMapOutput
 	)
+	if debug {
+		log.Println("--> init-shuffle and sort...")
+	}
 	// ss
 	for _, out := range outs {
 		err := json.Unmarshal(out, &tempMapOut)
@@ -357,6 +364,9 @@ func initShuffleAndSort(outs [][]byte) utils.InitMapOutput {
 		initMapOut.MinDistances = append(initMapOut.MinDistances, tempMapOut.MinDistances...)
 	}
 	// return
+	if debug {
+		log.Print("\t\t\t...completed.")
+	}
 	return initMapOut
 }
 
