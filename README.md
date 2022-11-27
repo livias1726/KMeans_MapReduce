@@ -1,5 +1,5 @@
 # KMeans - MapReduce
-## Remote side 
+## Remote side - stateless implementation
 
 ### Environment
 To deploy the master and the worker it can be used a Linux instance. In particular, the software was deployed on a AWS
