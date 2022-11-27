@@ -207,7 +207,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	return nil
 }
 
-/*------------------------------------------------------- MAIN -------------------------------------------------------*/
+/*------------------------------------------------------ MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
 	worker.Mappers = make(map[int]map[int]*Mapper)
