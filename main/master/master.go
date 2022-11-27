@@ -166,9 +166,15 @@ func kMeanspp(conf *Configuration, dataset utils.Points) {
 		log.Printf("K-Means++ (initialization) iteration #%d... ", numIter)
 
 		// init-map
-		initMapOutput := initMapFunction(conf.RequestId, len(conf.InputPoints[0]), conf.NumMappers, conf.Mappers,
-			conf.InputPoints, conf.CurrentCentroids)
-		// aggregation of results
+		var initMapOutput [][]byte
+		if i == 0 { // send chunks only in the first iteration
+			initMapOutput = initMapFunction(conf.RequestId, len(conf.InputPoints[0]), conf.NumMappers, conf.Mappers,
+				conf.InputPoints, conf.CurrentCentroids)
+		} else {
+			initMapOutput = initMapFunction(conf.RequestId, 1, conf.NumMappers, conf.Mappers,
+				nil, conf.CurrentCentroids)
+		}
+		// init-shuffle and sort
 		mapOut := initShuffleAndSort(initMapOutput)
 		// init-reduce -> single reducer
 		initRedOutput := initReduceFunction(conf.Reducers[0], mapOut)
@@ -238,34 +244,31 @@ func initMapFunction(reqId int, chunksPerMapper int, numMappers int, mappers []*
 		log.Println("--> init-map phase started... ")
 	}
 	channels := make([]*rpc.Call, numMappers)
-	results := make([]utils.InitMapOutput, chunksPerMapper)
+	results := make([][]byte, numMappers)
 	// send chunks and centroids
-	for i := 0; i < chunksPerMapper; i++ { // send i-th chunk to every mapper
+	for i := 0; i < chunksPerMapper; i++ {
 		last := i == chunksPerMapper-1
-
-		if i == 0 {
+		if i == 0 { // send centroids only in the first iteration
 			for j, cli := range mappers {
 				mapArgs := prepareInitMapArgs([2]int{reqId, j}, chunks[j][i], centroids, last)
 				channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil) // call j-th mapper
 			}
 		} else {
+			// send i-th chunk to every mapper
 			for j, cli := range mappers {
 				mapArgs := prepareInitMapArgs([2]int{reqId, j}, chunks[j][i], nil, last)
 				channels[j] = cli.Go(mapService1, mapArgs, &results[j], nil) // call j-th mapper
 			}
 		}
-
 		// wait for ack
 		if !last {
-			checkAck(reqId, mappers, chunks, centroids, channels, results, i, last)
+			checkAck(channels, results)
 		}
 	}
-
 	// wait for response
-	for i := 0; i < numMappers; i++ {
-		<-channels[i].Done
+	for _, channel := range channels {
+		<-channel.Done
 	}
-
 	// return
 	if debug {
 		log.Println("\t\t\t...completed.")
@@ -288,39 +291,16 @@ func prepareInitMapArgs(mapperId [2]int, chunk utils.Points, centroids utils.Poi
 	return mArgs
 }
 
-func checkAck(reqId int, mappers []*rpc.Client, chunks [][]utils.Points, centroids utils.Points, channels []*rpc.Call,
-	results [][]byte, chunkId int, last bool) {
-	var ack bool
-	var idx []int
-	stop := true
+// checks the correct reception of each chunk by the mappers to continue sending other chunks
+// the network layer with TCP adds the real reliability mechanism
+func checkAck(channels []*rpc.Call, results [][]byte) {
+	var ok bool
 	for j, channel := range channels {
 		<-channel.Done
-		err := json.Unmarshal(results[j], &ack)
+		err := json.Unmarshal(results[j], &ok)
 		errorHandler(err, "ack unmarshalling")
-		if !ack {
-			idx = append(idx, j)
-			stop = false
-		}
-	}
-
-	for !stop {
-		// check replies
-		stop = true
-		idx = nil
-		for _, id := range idx {
-			<-channels[id].Done
-			err := json.Unmarshal(results[id], &ack)
-			errorHandler(err, "ack unmarshalling")
-			if !ack {
-				idx = append(idx, id)
-				stop = false
-			}
-		}
-		// retry if nack
-		for _, id := range idx {
-			cli := mappers[id]
-			mapArgs := prepareInitMapArgs([2]int{reqId, id}, chunks[id][chunkId], centroids, last)
-			channels[id] = cli.Go(mapService1, mapArgs, &results[id], nil)
+		if debug {
+			log.Printf("--> ack received... keep going")
 		}
 	}
 }
