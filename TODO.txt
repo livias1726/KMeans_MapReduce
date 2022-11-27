@@ -1,2 +1,0 @@
-1. Update README.md for remote execution
-2. Clean modules code (e.g. error lines)
