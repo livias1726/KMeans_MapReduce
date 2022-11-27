@@ -53,7 +53,7 @@ const (
 	maxLoad            = 1000 // maximum number of points each chunk is composed by
 	maxNodes           = 10   // maximum number of mappers that can be spawned (could depend on the resources available)
 	deltaThreshold     = 0.01 // threshold for the distance between centroids obtained in two consecutive iterations
-	iterationThreshold = 100  // threshold for the maximum number of iteration before stopping the processing
+	iterationThreshold = 15   // threshold for the maximum number of iteration before stopping the processing
 )
 
 // KMeans /*---------------------------------- REMOTE PROCEDURE - CLIENT SIDE ---------------------------------------*/
