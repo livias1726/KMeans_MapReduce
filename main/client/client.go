@@ -23,7 +23,7 @@ const (
 	datapath      = "main/client/data/"
 	service       = "MasterServer.KMeans"
 	network       = "tcp"
-	masterAddress = "localhost"
+	masterAddress = "3.68.223.136"
 	masterPort    = 11090
 	maxChunk      = 10000
 )
