@@ -21,9 +21,7 @@ type KMResponse struct {
 
 type InitMapInput struct {
 	MapperId  [2]int
-	First     bool
 	Centroids Points
-	NewPoints bool
 	Chunk     Points
 	Last      bool
 }
