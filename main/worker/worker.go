@@ -22,7 +22,7 @@ const (
 // --> output: points processed and their minimum distance from the set of centroids --> ([x], [min_d])
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	// unmarshalling
-	var inArgs utils.InitMapInput
+	var inArgs utils.MapInput
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, 72)
 	if debug {

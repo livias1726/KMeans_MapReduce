@@ -255,7 +255,7 @@ func initMapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client,
 	for i := 0; i < chunksPerMapper; i++ { // send i-th chunk to every mapper
 		replies := make([][]byte, numMappers)
 		for j, cli := range mappers {
-			mapArgs := prepareInitMapArgs(chunks[j][i], centroids)
+			mapArgs := prepareMapArgs(chunks[j][i], centroids)
 			channels[j] = cli.Go(mapService1, mapArgs, &replies[j], nil) // call j-th mapper
 		}
 		// wait for response
@@ -273,19 +273,6 @@ func initMapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client,
 	// return
 	initMapOutput := initSort(results)
 	return initMapOutput
-}
-
-// prepares a InitMapInput object for the k-means++ map task
-func prepareInitMapArgs(chunk utils.Points, centroids utils.Points) []byte {
-	// arguments
-	initMapArgs := new(utils.InitMapInput)
-	initMapArgs.Centroids = centroids
-	initMapArgs.Chunk = chunk
-	// marshaling
-	mArgs, err := json.Marshal(&initMapArgs)
-	errorHandler(err, "init-map input marshalling")
-	// return
-	return mArgs
 }
 
 // map task gets called with the current set of centroids (_, centroids)

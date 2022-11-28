@@ -19,11 +19,6 @@ type KMResponse struct {
 
 /*---------------------------------------------------- MAP-REDUCE ----------------------------------------------------*/
 
-type InitMapInput struct {
-	Centroids Points
-	Chunk     Points
-}
-
 type InitMapOutput struct {
 	Points       Points
 	MinDistances []float64
