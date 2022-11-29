@@ -202,12 +202,12 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 		// map
 		mapOutput = mapFunction(conf.RequestId, conf.NumMappers, conf.Mappers, conf.CurrentCentroids)
 		// shuffle and sort
-		reduceInputs := shuffleAndSort(mapOutput)
+		reduceInputs, length := shuffleAndSort(mapOutput)
 		// reduce
 		reduceOutput := reduceFunction(conf.NumReducers, conf.Reducers, reduceInputs)
 
 		// get the new centroids
-		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids)
+		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids, length)
 		// check delta threshold
 		delta := computeDelta(conf.CurrentCentroids, newCentroids)
 		if delta < conf.DeltaThreshold {
@@ -371,7 +371,7 @@ func initShuffleAndSort(outs [][]byte) utils.InitMapOutput {
 }
 
 // merges the partial (combined) clusters from every mapper in the actual clusters to pass to the reducers
-func shuffleAndSort(resp [][]byte) []utils.ReduceInput {
+func shuffleAndSort(resp [][]byte) ([]utils.ReduceInput, map[int]int) {
 	if debug {
 		log.Println("--> shuffle and sort...")
 	}
@@ -400,7 +400,6 @@ func shuffleAndSort(resp [][]byte) []utils.ReduceInput {
 		var ri utils.ReduceInput
 		ri.ClusterId = cid
 		ri.Points = sum
-		ri.Len = lMap[cid]
 
 		redIn[cid] = ri
 	}
@@ -408,7 +407,7 @@ func shuffleAndSort(resp [][]byte) []utils.ReduceInput {
 	if debug {
 		log.Print("\t\t\t...completed.")
 	}
-	return redIn
+	return redIn, lMap
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
@@ -445,7 +444,7 @@ func reduceFunction(numReducers int, reducers []*rpc.Client, args []utils.Reduce
 	// send a cluster to each reducer
 	for i, cli := range reducers {
 		// marshalling
-		rArgs := prepareReduceArgs(args[i].ClusterId, args[i].Points, args[i].Len)
+		rArgs := prepareReduceArgs(args[i].ClusterId, args[i].Points)
 		// call the service: 1 reducer per cluster
 		channels[i] = cli.Go(reduceService2, rArgs, &results[i], nil)
 	}
@@ -461,12 +460,11 @@ func reduceFunction(numReducers int, reducers []*rpc.Client, args []utils.Reduce
 }
 
 // prepares a ReduceInput object for the k-means reduce task
-func prepareReduceArgs(clusterId int, points utils.Points, length int) []byte {
+func prepareReduceArgs(clusterId int, points utils.Points) []byte {
 	// arguments
 	redArg := new(utils.ReduceInput)
 	redArg.ClusterId = clusterId
 	redArg.Points = points
-	redArg.Len = length
 	// marshalling
 	rArgs, err := json.Marshal(&redArg)
 	errorHandler(err, "reduce input marshalling")
@@ -578,7 +576,7 @@ func computeDelta(oldCentroids utils.Points, newCentroids utils.Points) float64 
 }
 
 // computes the new set of centroids from the latest k-means iteration
-func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points {
+func computeNewCentroids(resp [][]byte, oldCentroids utils.Points, length map[int]int) utils.Points {
 	newCentroids := make(utils.Points, len(oldCentroids))
 	// reduce output does not have to contain data for every cluster (no mapper added a point to a given cluster)
 	// the missing ones are the old ones
@@ -593,7 +591,7 @@ func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points 
 		var centroid utils.Point
 		centroid.Coordinates = make([]float64, len(out.Point.Coordinates))
 		for j, coord := range out.Point.Coordinates {
-			centroid.Coordinates[j] = coord / float64(out.Len)
+			centroid.Coordinates[j] = coord / float64(length[out.ClusterId])
 		}
 		newCentroids[out.ClusterId] = centroid
 	}

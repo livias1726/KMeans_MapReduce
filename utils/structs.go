@@ -45,11 +45,9 @@ type MapOutput struct {
 type ReduceInput struct {
 	ClusterId int
 	Points    Points
-	Len       int
 }
 
 type ReduceOutput struct {
 	ClusterId int
 	Point     Point
-	Len       int
 }
