@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"sync"
 )
 
 type Mapper struct {
@@ -22,6 +23,7 @@ type Worker struct {
 type Combiner struct {
 	InitMapOut utils.InitMapOutput
 	MapOut     utils.MapOutput
+	mux        sync.Mutex
 }
 
 const (
@@ -69,12 +71,18 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	}
 	// process
 	comb := new(Combiner)
+	var wg sync.WaitGroup
+	wg.Add(len(mapper.Chunks))
 	for _, chunk := range mapper.Chunks {
 		// map
 		localOutput := computeMinDistances(chunk, mapper.Centroids)
 		// combine
-		comb.initCombine(localOutput)
+		go func(localOutput utils.InitMapOutput) {
+			comb.initCombine(localOutput)
+			wg.Done()
+		}(localOutput)
 	}
+	wg.Wait()
 	// marshalling
 	s, err := json.Marshal(comb.InitMapOut)
 	errorHandler(err, "init-map marshalling")
@@ -86,8 +94,10 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 // performs a combine phase for a local map output before giving the result to the master
 func (c *Combiner) initCombine(inArgs utils.InitMapOutput) {
 	combRes, dist := getFartherPoint(inArgs)
+	c.mux.Lock()
 	c.InitMapOut.Points = append(c.InitMapOut.Points, combRes)
 	c.InitMapOut.MinDistances = append(c.InitMapOut.MinDistances, dist)
+	c.mux.Unlock()
 }
 
 // InitReduce
@@ -131,7 +141,12 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 	mapper.Centroids = inArgs.Centroids
 	// classify each given point to a cluster
 	comb := new(Combiner)
-	for i, chunk := range mapper.Chunks {
+	comb.MapOut.Clusters = make(map[int]utils.Points)
+	comb.MapOut.Len = make(map[int]int)
+	comb.MapOut.Sum = make(map[int]utils.Point)
+	var wg sync.WaitGroup
+	wg.Add(len(mapper.Chunks))
+	for _, chunk := range mapper.Chunks {
 		var (
 			clusterId []int
 			length    []int
@@ -146,8 +161,12 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 			length = append(length, 1)
 		}
 		// combine
-		comb.combine(i == 0, clusterId, points, length)
+		go func(clusterId []int, points utils.Points, length []int) {
+			comb.combine(clusterId, points, length)
+			wg.Done()
+		}(clusterId, points, length)
 	}
+	wg.Wait()
 	// marshalling
 	s, err := json.Marshal(comb.MapOut)
 	errorHandler(err, "map marshalling")
@@ -158,15 +177,9 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 
 // aggregates the clusters obtained from each chunk by the mapper --> shuffle and sort
 // computes the partial sum of each point in each partial cluster obtained from mapper --> reduce
-func (c *Combiner) combine(first bool, clusterId []int, points utils.Points, length []int) {
+func (c *Combiner) combine(clusterId []int, points utils.Points, length []int) {
+	c.mux.Lock()
 	mapOut := &c.MapOut
-	if first {
-		// allocate space
-		mapOut.Clusters = make(map[int]utils.Points)
-		mapOut.Len = make(map[int]int)
-		mapOut.Sum = make(map[int]utils.Point)
-	}
-
 	for i, cid := range clusterId {
 		_, ok := mapOut.Clusters[cid]
 		if ok {
@@ -183,6 +196,7 @@ func (c *Combiner) combine(first bool, clusterId []int, points utils.Points, len
 			mapOut.Sum[cid] = points[i]
 		}
 	}
+	c.mux.Unlock()
 }
 
 // Reduce -> recenter /*---------------------------------- REMOTE PROCEDURE - MASTER SIDE ----------------------------*/
