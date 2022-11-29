@@ -25,7 +25,7 @@ const (
 	network       = "tcp"
 	masterAddress = "localhost"
 	masterPort    = 11090
-	maxChunk      = 10000
+	maxChunk      = 100000
 )
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
@@ -86,12 +86,10 @@ func main() {
 		if !last {
 			err = json.Unmarshal(reply, &ack)
 			errorHandler(err, "ack unmarshalling")
-
-			if !ack {
-				i-- // retry
-			} else {
-				counter += maxChunk
+			if debug {
+				log.Printf("--> ack received... keep going")
 			}
+			counter += maxChunk
 		}
 	}
 	elapsed := time.Since(start)
@@ -279,7 +277,7 @@ func plotResults(result utils.Clusters) {
 func fileClose(file io.Closer) {
 	func(file io.Closer) {
 		err := file.Close()
-		errorHandler(err, "file closure")
+		errorHandler(err, "file closing")
 	}(file)
 }
 

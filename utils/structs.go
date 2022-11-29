@@ -32,17 +32,15 @@ type MapInput struct {
 type MapOutput struct {
 	Clusters map[int]Points
 	Len      map[int]int
-	Sum      map[int]Points
+	Sum      map[int]Point
 }
 
 type ReduceInput struct {
 	ClusterId int
 	Points    Points
-	Len       int
 }
 
 type ReduceOutput struct {
 	ClusterId int
 	Point     Point
-	Len       int
 }
