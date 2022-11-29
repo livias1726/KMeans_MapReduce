@@ -25,12 +25,11 @@ const (
 	network       = "tcp"
 	masterAddress = "3.68.223.136"
 	masterPort    = 11090
-	maxChunk      = 10000
+	maxChunk      = 100000
 )
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
-
 	var (
 		reply  []byte
 		ack    bool
@@ -39,71 +38,60 @@ func main() {
 		mArgs  []byte
 		result utils.KMResponse
 	)
-
 	// check for open TCP ports
 	connect(&cli)
 	defer fileClose(cli)
-
 	// prepare request
 	name := listDatasets(datapath + "dataset/")
 	dataset := readDataset(datapath + "dataset/" + name)
 	dim := len(dataset)
-
 	// send 10k points per message
 	numMessages := int(math.Ceil(float64(dim) / float64(maxChunk)))
 	counter := 0
 	k := new(int)
 	*k = 0
-
+	// transmission
 	start := time.Now() // take execution time
 	for i := 0; i < numMessages; i++ {
 		first := i == 0
 		last := i == numMessages-1
-
 		// get marshalled request
 		if (dim - counter) > maxChunk {
 			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, first, last)
 		} else {
 			mArgs = prepareArguments(dataset[counter:dim], k, dim, first, last)
 		}
-
 		// audit
 		if first {
 			fmt.Print("Transmitting data...")
 		}
 		fmt.Print(".")
-
 		if debug {
 			log.Printf("--> client %p calling service %s with a %d bytes message (%d)",
 				cli, service, len(mArgs), i)
 		}
-
 		// call the service synchronously
 		err = cli.Call(service, mArgs, &reply)
 		errorHandler(err, "rpc")
-
 		// check ack
 		if !last {
 			err = json.Unmarshal(reply, &ack)
 			errorHandler(err, "ack unmarshalling")
-
-			if !ack {
-				i-- // retry
-			} else {
-				counter += maxChunk
+			if debug {
+				log.Printf("--> ack received... keep going")
 			}
+			counter += maxChunk
 		}
 	}
 	elapsed := time.Since(start)
-
 	// unmarshalling of reply
 	err = json.Unmarshal(reply, &result)
 	errorHandler(err, "result unmarshalling")
-
 	// results
 	showResults(result, elapsed)
 }
 
+// connects to the master using the constant addresses
 func connect(cli **rpc.Client) {
 	fmt.Print("Connecting to the server...")
 
@@ -125,11 +113,9 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	var err error
 	kmRequest := new(utils.KMRequest)
 	kmRequest.IP = getIPAddress()
-
 	// dataset
 	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
 	errorHandler(err, "points extraction")
-
 	// k
 	if *k == 0 {
 		kmRequest.K = scanK(max)
@@ -137,25 +123,23 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	} else {
 		kmRequest.K = *k
 	}
-
 	// flags
 	kmRequest.First = first
 	kmRequest.Last = last
-
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
 	errorHandler(err, "request marshalling")
-
+	// return
 	return s
 }
 
+// get the IP address of the client machine to discriminate requests on master side
 func getIPAddress() string {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	errorHandler(err, "ip retrieval")
 	defer fileClose(conn)
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
-
 	return localAddr.IP.String()
 }
 
@@ -279,7 +263,7 @@ func plotResults(result utils.Clusters) {
 func fileClose(file io.Closer) {
 	func(file io.Closer) {
 		err := file.Close()
-		errorHandler(err, "file closure")
+		errorHandler(err, "file closing")
 	}(file)
 }
 
