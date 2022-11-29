@@ -22,7 +22,7 @@ const (
 // --> output: points processed and their minimum distance from the set of centroids --> ([x], [min_d])
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	// unmarshalling
-	var inArgs utils.InitMapInput
+	var inArgs utils.MapInput
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, "init-map unmarshalling")
 	if debug {
@@ -40,7 +40,7 @@ func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	return nil
 }
 
-// performs a combine phase for a local map output before giving the result to the master
+// Performs a combine phase for a local map output before giving the result to the master
 func initCombine(inArgs utils.InitMapOutput) utils.InitMapOutput {
 	combRes, dist := getFartherPoint(inArgs)
 	inArgs.Points = utils.Points{combRes}
@@ -72,7 +72,6 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 	// marshalling
 	s, err := json.Marshal(&redRes)
 	errorHandler(err, "init-reduce marshalling")
-
 	// return
 	*result = s
 	return nil
@@ -80,30 +79,19 @@ func (w *Worker) InitReduce(payload []byte, result *[]byte) error {
 
 // Map -> classify /*-------------------------- REMOTE PROCEDURE - MASTER SIDE ---------------------------------------*/
 func (w *Worker) Map(payload []byte, result *[]byte) error {
-	var (
-		inArgs    utils.MapInput
-		clusterId []int
-		length    []int
-		points    utils.Points
-	)
+	var inArgs utils.MapInput
 	// unmarshalling
 	err := json.Unmarshal(payload, &inArgs)
 	errorHandler(err, "map unmarshalling")
 	// map -> classify each given point to a cluster
-	for _, point := range inArgs.Chunk {
-		idx, _ := classify(inArgs.Centroids, point)
-
-		clusterId = append(clusterId, idx)
-		points = append(points, point)
-		length = append(length, 1)
-	}
+	// map
+	localOutput := computeClassification(inArgs.Chunk, inArgs.Centroids)
 	// combine -> compute the local sum of the points in each cluster
-	outArgs := combine(clusterId, points, length)
+	outArgs := combine(localOutput)
 
 	// marshalling
 	s, err := json.Marshal(outArgs)
 	errorHandler(err, "map marshalling")
-
 	// return
 	*result = s
 	return nil
@@ -111,27 +99,27 @@ func (w *Worker) Map(payload []byte, result *[]byte) error {
 
 // aggregates the clusters obtained from each chunk by the mapper --> shuffle and sort
 // computes the partial sum of each point in each partial cluster obtained from mapper --> reduce
-func combine(clusterId []int, points utils.Points, length []int) utils.MapOutput {
+func combine(inArgs utils.MapOutput) utils.MapOutput {
 	var mapOut utils.MapOutput
 	// allocate space
 	mapOut.Clusters = make(map[int]utils.Points)
 	mapOut.Len = make(map[int]int)
-	mapOut.Sum = make(map[int]utils.Points)
-	//
-	for i, cid := range clusterId {
+	mapOut.Sum = make(map[int]utils.Point)
+
+	for cid, points := range inArgs.Clusters {
 		_, ok := mapOut.Clusters[cid]
 		if ok {
 			// aggregate
-			mapOut.Clusters[cid] = append(mapOut.Clusters[cid], points[i])
-			mapOut.Len[cid] += length[i]
+			mapOut.Clusters[cid] = append(mapOut.Clusters[cid], points...)
+			mapOut.Len[cid] += inArgs.Len[cid]
 			// recenter
-			mapOut.Sum[cid] = utils.Points{recenter(append(mapOut.Sum[cid], points[i]), len(points[i].Coordinates))}
+			mapOut.Sum[cid] = recenter(append(points, mapOut.Sum[cid]), len(points[0].Coordinates))
 		} else {
 			// aggregate
-			mapOut.Clusters[cid] = utils.Points{points[i]}
-			mapOut.Len[cid] = length[i]
+			mapOut.Clusters[cid] = points
+			mapOut.Len[cid] = inArgs.Len[cid]
 			// recenter
-			mapOut.Sum[cid] = utils.Points{points[i]}
+			mapOut.Sum[cid] = recenter(points, len(points[0].Coordinates))
 		}
 	}
 	return mapOut
@@ -150,7 +138,6 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 	var redRes utils.ReduceOutput
 	redRes.ClusterId = inArgs.ClusterId
 	redRes.Point = recenter(inArgs.Points, len(inArgs.Points[0].Coordinates))
-	redRes.Len = inArgs.Len
 	// marshalling
 	s, err := json.Marshal(&redRes)
 	errorHandler(err, "reduce marshalling")
@@ -162,6 +149,7 @@ func (w *Worker) Reduce(payload []byte, result *[]byte) error {
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
 	worker := new(Worker)
+
 	// publish the methods
 	err := rpc.Register(worker)
 	errorHandler(err, "service register")
@@ -188,6 +176,29 @@ func computeMinDistances(points utils.Points, centroids utils.Points) utils.Init
 		// store the point and its minimum distance from the centroids
 		mapOut.Points[i] = point
 		mapOut.MinDistances[i] = dist
+	}
+
+	return mapOut
+}
+
+// used to execute the classification of a single chunk
+func computeClassification(points utils.Points, centroids utils.Points) utils.MapOutput {
+	var mapOut utils.MapOutput
+	mapOut.Clusters = make(map[int]utils.Points)
+	mapOut.Len = make(map[int]int)
+	// map
+	for _, point := range points {
+		cid, _ := classify(centroids, point)
+		_, ok := mapOut.Clusters[cid]
+		if ok {
+			// aggregate
+			mapOut.Clusters[cid] = append(mapOut.Clusters[cid], point)
+			mapOut.Len[cid] += 1
+		} else {
+			// aggregate
+			mapOut.Clusters[cid] = utils.Points{point}
+			mapOut.Len[cid] = 1
+		}
 	}
 
 	return mapOut

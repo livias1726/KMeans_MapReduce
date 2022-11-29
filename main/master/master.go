@@ -197,6 +197,7 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 	var (
 		currClusters []map[int]utils.Points
 		reduceInputs []utils.ReduceInput
+		length       map[int]int
 		msg          string
 	)
 	numIter := 1
@@ -204,15 +205,15 @@ func kMeans(conf *Configuration) (utils.Clusters, string) {
 		log.Printf("Standard K-Means iteration #%d... ", numIter)
 
 		// map
-		mapOutputs := mapFunction(len(conf.InputPoints[0]), conf.NumMappers, conf.Mappers, conf.InputPoints,
+		mapOutputs, sums := mapFunction(len(conf.InputPoints[0]), conf.NumMappers, conf.Mappers, conf.InputPoints,
 			conf.CurrentCentroids)
 		// shuffle and sort
-		currClusters, reduceInputs = sort(mapOutputs)
+		currClusters, reduceInputs, length = sort(mapOutputs, sums)
 		// reduce
 		reduceOutput := reduceFunction(conf.NumReducers, conf.Reducers, reduceInputs)
 
 		// get the new centroids
-		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids)
+		newCentroids := computeNewCentroids(reduceOutput, conf.CurrentCentroids, length)
 		// check delta threshold
 		delta := computeDelta(conf.CurrentCentroids, newCentroids)
 		if delta < conf.DeltaThreshold {
@@ -255,7 +256,7 @@ func initMapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client,
 	for i := 0; i < chunksPerMapper; i++ { // send i-th chunk to every mapper
 		replies := make([][]byte, numMappers)
 		for j, cli := range mappers {
-			mapArgs := prepareInitMapArgs(chunks[j][i], centroids)
+			mapArgs := prepareMapArgs(chunks[j][i], centroids)
 			channels[j] = cli.Go(mapService1, mapArgs, &replies[j], nil) // call j-th mapper
 		}
 		// wait for response
@@ -275,28 +276,16 @@ func initMapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client,
 	return initMapOutput
 }
 
-// prepares a InitMapInput object for the k-means++ map task
-func prepareInitMapArgs(chunk utils.Points, centroids utils.Points) []byte {
-	// arguments
-	initMapArgs := new(utils.InitMapInput)
-	initMapArgs.Centroids = centroids
-	initMapArgs.Chunk = chunk
-	// marshaling
-	mArgs, err := json.Marshal(&initMapArgs)
-	errorHandler(err, "init-map input marshalling")
-	// return
-	return mArgs
-}
-
 // map task gets called with the current set of centroids (_, centroids)
 func mapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client, chunks [][]utils.Points,
-	centroids utils.Points) []utils.MapOutput {
+	centroids utils.Points) ([]utils.MapOutput, []map[int]utils.Points) {
 	if debug {
 		log.Print("--> map phase started... ")
 	}
 	var wg sync.WaitGroup
 	channels := make([]*rpc.Call, numMappers)
-	results := make([]utils.MapOutput, chunksPerMapper)
+	mapOut := make([]utils.MapOutput, chunksPerMapper)
+	sums := make([]map[int]utils.Points, chunksPerMapper)
 	// send chunks and centroids
 	wg.Add(chunksPerMapper)
 	for i := 0; i < chunksPerMapper; i++ {
@@ -311,14 +300,14 @@ func mapFunction(chunksPerMapper int, numMappers int, mappers []*rpc.Client, chu
 		}
 		// process replies asynchronously
 		go func(idx int) {
-			shuffle(replies, &results[idx])
+			mapOut[idx], sums[idx] = shuffle(replies)
 			wg.Done()
 		}(i)
 	}
-	// synchronize ss threads to merge results
+	// synchronize ss threads to merge mapOut
 	wg.Wait()
 	// return
-	return results
+	return mapOut, sums
 }
 
 // prepares a MapInput object for the k-means map task
@@ -364,7 +353,7 @@ func initSort(output []utils.InitMapOutput) utils.InitMapOutput {
 }
 
 // merges the partial sums (combined) obtained from the clustering of every mapper to get the set of reduce inputs
-func shuffle(replies [][]byte, shuffled *utils.MapOutput) {
+func shuffle(replies [][]byte) (utils.MapOutput, map[int]utils.Points) {
 	if debug {
 		log.Println("--> shuffle...")
 	}
@@ -372,50 +361,47 @@ func shuffle(replies [][]byte, shuffled *utils.MapOutput) {
 		mapOut utils.MapOutput
 		temp   utils.MapOutput
 	)
-	pMap := make(map[int]utils.Points)
+	mapOut.Clusters = make(map[int]utils.Points)
+	mapOut.Len = make(map[int]int)
 	sMap := make(map[int]utils.Points)
-	lMap := make(map[int]int)
 	for _, m := range replies {
 		// unmarshalling
 		err := json.Unmarshal(m, &temp)
 		errorHandler(err, "map output unmarshalling")
 		// merge
 		for cid, points := range temp.Clusters {
-			_, ok := pMap[cid]
+			_, ok := mapOut.Clusters[cid]
 			if ok { // if the cluster id is already in the maps, append the new results
-				pMap[cid] = append(pMap[cid], points...)
-				sMap[cid] = append(sMap[cid], temp.Sum[cid]...)
-				lMap[cid] += temp.Len[cid]
+				mapOut.Clusters[cid] = append(mapOut.Clusters[cid], points...)
+				sMap[cid] = append(sMap[cid], temp.Sum[cid])
+				mapOut.Len[cid] += temp.Len[cid]
 			} else { // else add the results under the new cluster id
-				pMap[cid] = points
-				sMap[cid] = temp.Sum[cid]
-				lMap[cid] = temp.Len[cid]
+				mapOut.Clusters[cid] = points
+				sMap[cid] = utils.Points{temp.Sum[cid]}
+				mapOut.Len[cid] = temp.Len[cid]
 			}
 		}
 	}
 	// return
-	mapOut.Clusters = pMap
-	mapOut.Sum = sMap
-	mapOut.Len = lMap
-	*shuffled = mapOut
+	return mapOut, sMap
 }
 
-func sort(mapOut []utils.MapOutput) ([]map[int]utils.Points, []utils.ReduceInput) {
+func sort(mapOut []utils.MapOutput, sums []map[int]utils.Points) ([]map[int]utils.Points, []utils.ReduceInput, map[int]int) {
 	clusters := make([]map[int]utils.Points, len(mapOut))
 	redIn := make(map[int]utils.ReduceInput)
+	length := make(map[int]int)
 	for i, mo := range mapOut {
-		sums := mo.Sum
 		// reduce inputs
 		var ri utils.ReduceInput
-		for cid, sum := range sums {
+		for cid, sum := range sums[i] {
 			ri.ClusterId = cid
 			_, in := redIn[cid] // cid is not in the map
 			if !in {
 				ri.Points = sum
-				ri.Len = mo.Len[cid]
+				length[cid] = mo.Len[cid]
 			} else {
 				ri.Points = append(redIn[cid].Points, sum...)
-				ri.Len = redIn[cid].Len + mo.Len[cid]
+				length[cid] += mo.Len[cid]
 			}
 			redIn[cid] = ri // overwrite with updated data
 		}
@@ -431,7 +417,7 @@ func sort(mapOut []utils.MapOutput) ([]map[int]utils.Points, []utils.ReduceInput
 	if debug {
 		log.Print("\t\t\t...sort.")
 	}
-	return clusters, reduceInput
+	return clusters, reduceInput, length
 }
 
 /*---------------------------------------------------- REDUCE --------------------------------------------------------*/
@@ -468,7 +454,7 @@ func reduceFunction(numReducers int, reducers []*rpc.Client, args []utils.Reduce
 	// send a cluster to each reducer
 	for i, cli := range reducers {
 		// marshalling
-		rArgs := prepareReduceArgs(args[i].ClusterId, args[i].Points, args[i].Len)
+		rArgs := prepareReduceArgs(args[i].ClusterId, args[i].Points)
 		// call the service: 1 reducer per cluster
 		channels[i] = cli.Go(reduceService2, rArgs, &results[i], nil)
 	}
@@ -484,12 +470,11 @@ func reduceFunction(numReducers int, reducers []*rpc.Client, args []utils.Reduce
 }
 
 // prepares a ReduceInput object for the k-means reduce task
-func prepareReduceArgs(clusterId int, points utils.Points, length int) []byte {
+func prepareReduceArgs(clusterId int, points utils.Points) []byte {
 	// arguments
 	redArg := new(utils.ReduceInput)
 	redArg.ClusterId = clusterId
 	redArg.Points = points
-	redArg.Len = length
 	// marshalling
 	rArgs, err := json.Marshal(&redArg)
 	errorHandler(err, "reduce input marshalling")
@@ -497,7 +482,7 @@ func prepareReduceArgs(clusterId int, points utils.Points, length int) []byte {
 	return rArgs
 }
 
-/*------------------------------------------------------ MAIN -------------------------------------------------------*/
+/*------------------------------------------------------ MAIN --------------------------------------------------------*/
 func main() {
 	// create the server object to receive requests with its global metadata
 	master := new(MasterServer)
@@ -601,7 +586,7 @@ func computeDelta(oldCentroids utils.Points, newCentroids utils.Points) float64 
 }
 
 // computes the new set of centroids from the latest k-means iteration
-func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points {
+func computeNewCentroids(resp [][]byte, oldCentroids utils.Points, length map[int]int) utils.Points {
 	newCentroids := make(utils.Points, len(oldCentroids))
 	// reduce output does not have to contain data for every cluster (no mapper added a point to a given cluster)
 	// the missing ones are the old ones
@@ -616,7 +601,7 @@ func computeNewCentroids(resp [][]byte, oldCentroids utils.Points) utils.Points 
 		var centroid utils.Point
 		centroid.Coordinates = make([]float64, len(out.Point.Coordinates))
 		for j, coord := range out.Point.Coordinates {
-			centroid.Coordinates[j] = coord / float64(out.Len)
+			centroid.Coordinates[j] = coord / float64(length[out.ClusterId])
 		}
 		newCentroids[out.ClusterId] = centroid
 	}
