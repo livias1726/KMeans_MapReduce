@@ -16,10 +16,10 @@ import (
 
 // MasterServer structure is used to store global information for the server
 type MasterServer struct {
-	NumRequests int
-	Requests    map[string]int
-	Clients     map[int]*MasterClient
-	mutex       sync.Mutex
+	NumRequests int                   // number of clients served (and in service) during the master lifecycle
+	Requests    map[string]int        // references to concurrent requests (IP, requestNum)
+	Clients     map[int]*MasterClient // references to MasterClient instances that process concurrent requests
+	mutex       sync.Mutex            // used to operate on NumRequests, Requests and Clients
 }
 
 type MasterClient struct {

@@ -32,9 +32,9 @@ const (
 	address = "worker:11091"
 )
 
-// InitMap
-// --> input: set of current chosen initial centroids (from 1 to k-1) and chunk of points to process --> (mu, x)
-// --> output: chunk of points processed and their minimum distance from the set of centroids
+// InitMap : implements the map task for k-means++ algorithm initial phase
+// --> input: set of current chosen initial centroids (from 1 to k-1) and chunk of points to process --> (mu, [x])
+// --> output: points processed and their minimum distance from the set of centroids --> ([x], [min_d])
 func (w *Worker) InitMap(payload []byte, result *[]byte) error {
 	// unmarshalling
 	var inArgs utils.InitMapInput
