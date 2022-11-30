@@ -51,7 +51,8 @@ func main() {
 	k := new(int)
 	*k = 0
 	// transmission
-	start := time.Now() // take execution time
+	var startEx time.Time
+	startTx := time.Now() // take execution time
 	for i := 0; i < numMessages; i++ {
 		first := i == 0
 		last := i == numMessages-1
@@ -71,6 +72,9 @@ func main() {
 				cli, service, len(mArgs), i)
 		}
 		// call the service synchronously
+		if last {
+			startEx = time.Now()
+		}
 		err = cli.Call(service, mArgs, &reply)
 		errorHandler(err, "rpc")
 		// check ack
@@ -83,12 +87,13 @@ func main() {
 			counter += maxChunk
 		}
 	}
-	elapsed := time.Since(start)
+	elapsedEx := time.Since(startEx)
+	elapsedTx := time.Since(startTx)
 	// unmarshalling of reply
 	err = json.Unmarshal(reply, &result)
 	errorHandler(err, "result unmarshalling")
 	// results
-	showResults(result, elapsed)
+	showResults(result, elapsedTx-elapsedEx, elapsedEx)
 }
 
 // connects to the master using the constant addresses
@@ -200,14 +205,15 @@ func scanK(max int) int {
 }
 
 /*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
-func showResults(result utils.KMResponse, elapsed time.Duration) {
+func showResults(result utils.KMResponse, elapsedTx time.Duration, elapsedEx time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)
 	for i := 0; i < len(result.Clusters); i++ {
 		fmt.Printf("Cluster %d has %d points.\n",
 			i, len(result.Clusters[i].Points))
 	}
-	fmt.Printf("\nTime elapsed: %v.\n", elapsed)
+	fmt.Printf("\nTransmission time: %v.\n", elapsedTx)
+	fmt.Printf("Execution time: %v.\n", elapsedEx)
 
 	// csv results
 	var check string
