@@ -64,11 +64,9 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 		s         []byte
 		resp      utils.KMResponse
 	)
-
 	// unmarshalling
 	err = json.Unmarshal(payload, &kmRequest)
 	errorHandler(err, "request unmarshalling")
-
 	// get client
 	if kmRequest.First { // the client (the request) is new
 		// update the global info
@@ -83,10 +81,8 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 		m.mutex.Unlock()
 	}
 	mc := m.Clients[m.Requests[kmRequest.IP]]
-
 	// store new points
 	mc.Config.Dataset = append(mc.Config.Dataset, kmRequest.Dataset...)
-
 	// send ack
 	if !kmRequest.Last {
 		s, err = json.Marshal(true)
@@ -97,31 +93,25 @@ func (m *MasterServer) KMeans(payload []byte, reply *[]byte) error {
 		*reply = s
 		return err
 	}
-
 	// finalize the MasterClient object to start processing the request
 	mc.Config.RequestId = m.Requests[kmRequest.IP]
 	mc.Config.K = kmRequest.K
 	log.Printf("Received %d points from %s to cluster in %d groups.",
 		len(mc.Config.Dataset), kmRequest.IP, mc.Config.K)
-
 	// call the service
 	result, msg := mc.KMeans()
-
 	// preparing response
 	resp.Clusters = result
 	resp.Message = msg
-
 	// marshalling result
 	s, err = json.Marshal(&resp)
 	errorHandler(err, "result marshalling")
-
 	// clean up
 	m.mutex.Lock()
 	// the number of requests is not decreased to avoid having different k-means jobs with the same ID on mapper side
 	delete(m.Clients, mc.Config.RequestId)
 	delete(m.Requests, kmRequest.IP)
 	m.mutex.Unlock()
-
 	// return
 	if debug {
 		log.Print("--> master returning.\n")

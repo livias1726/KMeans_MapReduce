@@ -30,7 +30,6 @@ const (
 
 /*------------------------------------------------------- MAIN -------------------------------------------------------*/
 func main() {
-
 	var (
 		reply  []byte
 		ack    bool
@@ -39,49 +38,45 @@ func main() {
 		mArgs  []byte
 		result utils.KMResponse
 	)
-
 	// check for open TCP ports
 	connect(&cli)
 	defer fileClose(cli)
-
 	// prepare request
 	name := listDatasets(datapath + "dataset/")
 	dataset := readDataset(datapath + "dataset/" + name)
 	dim := len(dataset)
-
 	// send 10k points per message
 	numMessages := int(math.Ceil(float64(dim) / float64(maxChunk)))
 	counter := 0
 	k := new(int)
 	*k = 0
-
-	start := time.Now() // take execution time
+	// transmission
+	var startEx time.Time
+	startTx := time.Now() // take execution time
 	for i := 0; i < numMessages; i++ {
 		first := i == 0
 		last := i == numMessages-1
-
 		// get marshalled request
 		if (dim - counter) > maxChunk {
 			mArgs = prepareArguments(dataset[counter:counter+maxChunk], k, dim, first, last)
 		} else {
 			mArgs = prepareArguments(dataset[counter:dim], k, dim, first, last)
 		}
-
 		// audit
 		if first {
 			fmt.Print("Transmitting data...")
 		}
 		fmt.Print(".")
-
 		if debug {
 			log.Printf("--> client %p calling service %s with a %d bytes message (%d)",
 				cli, service, len(mArgs), i)
 		}
-
 		// call the service synchronously
+		if last {
+			startEx = time.Now()
+		}
 		err = cli.Call(service, mArgs, &reply)
 		errorHandler(err, "rpc")
-
 		// check ack
 		if !last {
 			err = json.Unmarshal(reply, &ack)
@@ -92,16 +87,16 @@ func main() {
 			counter += maxChunk
 		}
 	}
-	elapsed := time.Since(start)
-
+	elapsedEx := time.Since(startEx)
+	elapsedTx := time.Since(startTx)
 	// unmarshalling of reply
 	err = json.Unmarshal(reply, &result)
 	errorHandler(err, "result unmarshalling")
-
 	// results
-	showResults(result, elapsed)
+	showResults(result, elapsedTx-elapsedEx, elapsedEx)
 }
 
+// connects to the master using the constant addresses
 func connect(cli **rpc.Client) {
 	fmt.Print("Connecting to the server...")
 
@@ -123,11 +118,9 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	var err error
 	kmRequest := new(utils.KMRequest)
 	kmRequest.IP = getIPAddress()
-
 	// dataset
 	kmRequest.Dataset, err = utils.ExtractPoints(rawPoints)
 	errorHandler(err, "points extraction")
-
 	// k
 	if *k == 0 {
 		kmRequest.K = scanK(max)
@@ -135,25 +128,23 @@ func prepareArguments(rawPoints [][]string, k *int, max int, first bool, last bo
 	} else {
 		kmRequest.K = *k
 	}
-
 	// flags
 	kmRequest.First = first
 	kmRequest.Last = last
-
 	// marshalling
 	s, err := json.Marshal(&kmRequest)
 	errorHandler(err, "request marshalling")
-
+	// return
 	return s
 }
 
+// get the IP address of the client machine to discriminate requests on master side
 func getIPAddress() string {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	errorHandler(err, "ip retrieval")
 	defer fileClose(conn)
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
-
 	return localAddr.IP.String()
 }
 
@@ -214,14 +205,15 @@ func scanK(max int) int {
 }
 
 /*-------------------------------------------------- RESULTS ---------------------------------------------------------*/
-func showResults(result utils.KMResponse, elapsed time.Duration) {
+func showResults(result utils.KMResponse, elapsedTx time.Duration, elapsedEx time.Duration) {
 	fmt.Println("\n---------------------------------------- K-Means results --------------------------------------")
 	fmt.Printf("INFO: %s.\n\n", result.Message)
 	for i := 0; i < len(result.Clusters); i++ {
 		fmt.Printf("Cluster %d has %d points.\n",
 			i, len(result.Clusters[i].Points))
 	}
-	fmt.Printf("\nTime elapsed: %v.\n", elapsed)
+	fmt.Printf("\nTransmission time: %v.\n", elapsedTx)
+	fmt.Printf("Execution time: %v.\n", elapsedEx)
 
 	// csv results
 	var check string
